@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>管理员后台 - 词条抽奖工具</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell admin-shell">
+      <section class="hero compact">
+        <div>
+          <p class="eyebrow">Admin Console</p>
+          <h1>管理员后台</h1>
+          <p class="lead">管理参与者、词条、限制规则，并在统一时间一键开奖。</p>
+        </div>
+        <a class="ghost-link" href="/">返回提交页</a>
+      </section>
+
+      <form class="panel login-panel" id="loginForm">
+        <h2>登录</h2>
+        <label>管理员密码 <input name="password" type="password" required /></label>
+        <button type="submit">进入后台</button>
+        <p class="message" id="loginMessage"></p>
+      </form>
+
+      <section class="admin-grid hidden" id="adminApp">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>参与者</h2>
+            <span id="participantCount" class="pill">0 人</span>
+          </div>
+          <form id="participantForm">
+            <label>批量添加名字 <textarea name="names" rows="5" placeholder="每行一个名字，也可以用逗号分隔"></textarea></label>
+            <button type="submit">添加参与者</button>
+          </form>
+          <div class="list" id="participants"></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>词条</h2>
+            <span id="entryCount" class="pill">0 个</span>
+          </div>
+          <div class="list dense" id="entries"></div>
+        </div>
+
+        <div class="panel">
+          <h2>单人限制</h2>
+          <form id="restrictionForm" class="stack">
+            <label>参与者 <select name="participantId"></select></label>
+            <label>字段 <select name="fieldKey"></select></label>
+            <label>不能抽到的单项 <select name="entryId"></select></label>
+            <button type="submit">添加限制</button>
+          </form>
+          <div class="list dense" id="restrictions"></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>开奖</h2>
+            <span id="drawStatus" class="pill">未开奖</span>
+          </div>
+          <div class="actions">
+            <button id="drawButton" type="button">一键开奖</button>
+            <button id="resetButton" class="secondary danger" type="button">重置结果</button>
+            <a class="button-link secondary" href="/api/admin/export.csv">导出 CSV</a>
+          </div>
+          <p class="message" id="adminMessage"></p>
+          <div class="list dense results" id="results"></div>
+        </div>
+      </section>
+    </main>
+    <script src="/admin.js"></script>
+  </body>
+</html>

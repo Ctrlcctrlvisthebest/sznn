@@ -1,0 +1,19 @@
+{
+  "name": "entry-draw-tool",
+  "version": "1.0.0",
+  "description": "A temporary interactive entry submission and constrained draw tool.",
+  "main": "src/server.js",
+  "type": "module",
+  "scripts": {
+    "dev": "node src/server.js",
+    "start": "NODE_ENV=production node src/server.js"
+  },
+  "dependencies": {
+    "cookie-parser": "^1.4.7",
+    "express": "^4.21.2",
+    "nanoid": "^5.1.5"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
