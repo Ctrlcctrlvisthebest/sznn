@@ -159,6 +159,10 @@ def remove_participant(store, participant_id):
     store["results"] = [
         result for result in store["results"] if result["participant_id"] != participant_id
     ]
+    store["fieldBlocks"] = [
+        block for block in store["fieldBlocks"]
+        if block.get("participant_id") != participant_id
+    ]
 
 
 def remove_entry(store, entry_id):
@@ -174,13 +178,16 @@ def remove_entry(store, entry_id):
 def set_field_blocked(store, entry_id, field_key, blocked):
     store["fieldBlocks"] = [
         block for block in store["fieldBlocks"]
-        if block["entry_id"] != entry_id or block["field_key"] != field_key
+        if block["entry_id"] != entry_id
+        or block["field_key"] != field_key
+        or block.get("reason") == "fixed_result"
     ]
     if blocked:
         store["fieldBlocks"].append({
             "entry_id": entry_id,
             "field_key": field_key,
             "created_at": now(),
+            "reason": "manual",
         })
 
 
@@ -246,6 +253,55 @@ def assign_field(store, participants, entries, field):
     }
 
 
+def get_participant_entries(participant, entries):
+    return [
+        entry for entry in entries
+        if str(entry.get("creator_name", "")).strip() == participant["name"]
+    ]
+
+
+def choose_self_match_slots(participants, entries):
+    self_matches = {}
+    for participant in participants:
+        own_entries = get_participant_entries(participant, entries)
+        possible_matches = [
+            {"field": field, "entry": entry}
+            for field in DRAW_FIELDS
+            for entry in own_entries
+            if str(entry.get(field["key"], "")).strip()
+        ]
+        if not possible_matches:
+            continue
+
+        self_matches[participant["id"]] = random.choice(possible_matches)
+    return self_matches
+
+
+def get_fixed_results(store):
+    return [
+        result for result in store["results"]
+        if result.get("fixed")
+    ]
+
+
+def draw_result_for_participant(store, participant):
+    entries = list(store["entries"])
+    if not entries:
+        raise ValueError("还没有可抽提交。")
+
+    result = {
+        "participant_id": participant["id"],
+        "created_at": now(),
+        "sources": {},
+    }
+    for field in DRAW_FIELDS:
+        assignment = assign_field(store, [participant], entries, field)
+        source_entry = assignment[participant["id"]]
+        result[field["key"]] = source_entry[field["key"]]
+        result["sources"][field["key"]] = source_entry["id"]
+    return result
+
+
 def run_draw(store):
     if store["settings"].get("draw_locked") == "1":
         raise ValueError("已经开奖。如需重新开奖，请先重置结果。")
@@ -257,20 +313,41 @@ def run_draw(store):
     if not entries:
         raise ValueError("还没有可抽提交。")
 
-    field_assignments = {
-        field["key"]: assign_field(store, participants, entries, field)
-        for field in DRAW_FIELDS
-    }
+    fixed_results = get_fixed_results(store)
+    fixed_participant_ids = {result["participant_id"] for result in fixed_results}
+    participants_to_draw = [
+        participant for participant in participants
+        if participant["id"] not in fixed_participant_ids
+    ]
+    self_matches = choose_self_match_slots(participants_to_draw, entries)
 
-    results = []
-    for participant in participants:
+    field_assignments = {}
+    for field in DRAW_FIELDS:
+        participants_needing_random = [
+            participant for participant in participants_to_draw
+            if self_matches.get(participant["id"], {}).get("field", {}).get("key") != field["key"]
+        ]
+        if participants_needing_random:
+            field_assignments[field["key"]] = assign_field(
+                store,
+                participants_needing_random,
+                entries,
+                field,
+            )
+
+    results = list(fixed_results)
+    for participant in participants_to_draw:
         result = {
             "participant_id": participant["id"],
             "created_at": now(),
             "sources": {},
         }
         for field in DRAW_FIELDS:
-            source_entry = field_assignments[field["key"]][participant["id"]]
+            self_match = self_matches.get(participant["id"])
+            if self_match and self_match["field"]["key"] == field["key"]:
+                source_entry = self_match["entry"]
+            else:
+                source_entry = field_assignments[field["key"]][participant["id"]]
             result[field["key"]] = source_entry[field["key"]]
             result["sources"][field["key"]] = source_entry["id"]
         results.append(result)
@@ -278,6 +355,115 @@ def run_draw(store):
     store["results"] = results
     store["settings"]["draw_locked"] = "1"
     return len(results)
+
+
+def find_result_for_participant(store, participant_id):
+    return next(
+        (result for result in store["results"] if result["participant_id"] == participant_id),
+        None,
+    )
+
+
+def fixed_result_block_exists(store, participant_id, entry_id, field_key):
+    return any(
+        block["entry_id"] == entry_id
+        and block["field_key"] == field_key
+        and block.get("reason") == "fixed_result"
+        and block.get("participant_id") == participant_id
+        for block in store["fieldBlocks"]
+    )
+
+
+def add_fixed_result_block(store, participant_id, entry_id, field_key):
+    if fixed_result_block_exists(store, participant_id, entry_id, field_key):
+        return
+    store["fieldBlocks"].append({
+        "entry_id": entry_id,
+        "field_key": field_key,
+        "created_at": now(),
+        "reason": "fixed_result",
+        "participant_id": participant_id,
+    })
+
+
+def remove_fixed_result_block(store, participant_id, entry_id, field_key):
+    store["fieldBlocks"] = [
+        block for block in store["fieldBlocks"]
+        if block["entry_id"] != entry_id
+        or block["field_key"] != field_key
+        or block.get("reason") != "fixed_result"
+        or block.get("participant_id") != participant_id
+    ]
+
+
+def fix_result(store, participant, result):
+    sources = result.get("sources") or {}
+    for field in DRAW_FIELDS:
+        entry_id = sources.get(field["key"])
+        if entry_id:
+            add_fixed_result_block(store, participant["id"], entry_id, field["key"])
+    result["fixed"] = True
+    result["fixed_at"] = now()
+
+
+def update_fixed_result_field(store, participant, result, field_key, entry_id):
+    if not result.get("fixed"):
+        raise ValueError("这个结果还没有固定，不能编辑固定数据。")
+    if not is_valid_field(field_key):
+        raise ValueError("请选择要修改的字段。")
+
+    entry = find_by_id(store["entries"], entry_id)
+    if not entry:
+        raise ValueError("没有找到这个词条。")
+    if not str(entry.get(field_key, "")).strip():
+        raise ValueError("这个词条的对应字段为空，不能用于固定结果。")
+
+    sources = result.setdefault("sources", {})
+    old_entry_id = sources.get(field_key)
+    if old_entry_id:
+        remove_fixed_result_block(store, participant["id"], old_entry_id, field_key)
+
+    result[field_key] = entry[field_key]
+    sources[field_key] = entry["id"]
+    result["updated_at"] = now()
+    add_fixed_result_block(store, participant["id"], entry["id"], field_key)
+    return result
+
+
+def unfix_result(store, participant, result):
+    if not result.get("fixed"):
+        raise ValueError("这个结果还没有固定。")
+
+    sources = result.get("sources") or {}
+    for field in DRAW_FIELDS:
+        entry_id = sources.get(field["key"])
+        if entry_id:
+            remove_fixed_result_block(store, participant["id"], entry_id, field["key"])
+
+    result["fixed"] = False
+    result.pop("fixed_at", None)
+    result["updated_at"] = now()
+    return result
+
+
+def sacrifice_and_redraw(store, participant, result, field_key):
+    if result.get("fixed"):
+        raise ValueError("这个结果已经固定，不能再献祭重抽。")
+    if not is_valid_field(field_key):
+        raise ValueError("请选择要献祭的字段。")
+
+    source_entry_id = (result.get("sources") or {}).get(field_key)
+    if not source_entry_id:
+        raise ValueError("没有找到这个字段的来源词条。")
+
+    add_restriction(store, participant["id"], source_entry_id, field_key)
+    new_result = draw_result_for_participant(store, participant)
+    store["results"] = [
+        existing for existing in store["results"]
+        if existing["participant_id"] != participant["id"]
+    ]
+    store["results"].append(new_result)
+    return new_result
 
 
 def build_overview(store):
@@ -303,6 +489,7 @@ def build_overview(store):
         participant = find_by_id(store["participants"], result["participant_id"])
         if participant:
             results.append({
+                "participant_id": participant["id"],
                 "participant_name": participant["name"],
                 "entry_title": "随机组合",
                 "head": result.get("head", ""),
@@ -312,6 +499,9 @@ def build_overview(store):
                 "feature_one": result.get("feature_one", ""),
                 "feature_two": result.get("feature_two", ""),
                 "personality": result.get("personality", ""),
+                "sources": result.get("sources", {}),
+                "fixed": result.get("fixed", False),
+                "fixed_at": result.get("fixed_at", ""),
             })
 
     field_blocks = []
@@ -461,7 +651,50 @@ def get_result(name):
     return jsonify({"ok": True, "result": {
         "participant_name": participant["name"],
         "title": f"{participant['name']} 的随机组合",
+        "fields": DRAW_FIELDS,
         **result,
+    }})
+
+
+@app.post("/api/results/<name>/fix")
+def fix_public_result(name):
+    store = load_store()
+    participant = next((item for item in store["participants"] if item["name"] == name.strip()), None)
+    result = participant and find_result_for_participant(store, participant["id"])
+    if not result:
+        return jsonify({"ok": False, "error": "没有找到可固定的结果。"}), 404
+
+    fix_result(store, participant, result)
+    save_store(store)
+    return jsonify({"ok": True, "result": {
+        "participant_name": participant["name"],
+        "title": f"{participant['name']} 的随机组合",
+        "fields": DRAW_FIELDS,
+        **result,
+    }})
+
+
+@app.post("/api/results/<name>/sacrifice")
+def sacrifice_public_result(name):
+    store = load_store()
+    data = request.get_json(silent=True) or {}
+    field_key = str(data.get("fieldKey", ""))
+    participant = next((item for item in store["participants"] if item["name"] == name.strip()), None)
+    result = participant and find_result_for_participant(store, participant["id"])
+    if not result:
+        return jsonify({"ok": False, "error": "没有找到可献祭的结果。"}), 404
+
+    try:
+        new_result = sacrifice_and_redraw(store, participant, result, field_key)
+    except ValueError as error:
+        return jsonify({"ok": False, "error": str(error)}), 400
+
+    save_store(store)
+    return jsonify({"ok": True, "result": {
+        "participant_name": participant["name"],
+        "title": f"{participant['name']} 的随机组合",
+        "fields": DRAW_FIELDS,
+        **new_result,
     }})
 
 
@@ -572,6 +805,72 @@ def delete_restriction():
     return jsonify({"ok": True})
 
 
+@app.post("/api/admin/fixed-results/<int:participant_id>")
+def create_fixed_result(participant_id):
+    auth_error = require_admin()
+    if auth_error:
+        return auth_error
+
+    store = load_store()
+    participant = find_by_id(store["participants"], participant_id)
+    result = participant and find_result_for_participant(store, participant_id)
+    if not participant or not result:
+        return jsonify({"ok": False, "error": "没有找到可固定的结果。"}), 404
+
+    fix_result(store, participant, result)
+    save_store(store)
+    return jsonify({"ok": True})
+
+
+@app.patch("/api/admin/fixed-results/<int:participant_id>")
+def edit_fixed_result(participant_id):
+    auth_error = require_admin()
+    if auth_error:
+        return auth_error
+
+    store = load_store()
+    data = request.get_json(silent=True) or {}
+    participant = find_by_id(store["participants"], participant_id)
+    result = participant and find_result_for_participant(store, participant_id)
+    if not participant or not result:
+        return jsonify({"ok": False, "error": "没有找到这个固定结果。"}), 404
+
+    try:
+        update_fixed_result_field(
+            store,
+            participant,
+            result,
+            str(data.get("fieldKey", "")),
+            int(data.get("entryId") or 0),
+        )
+    except ValueError as error:
+        return jsonify({"ok": False, "error": str(error)}), 400
+
+    save_store(store)
+    return jsonify({"ok": True})
+
+
+@app.delete("/api/admin/fixed-results/<int:participant_id>")
+def delete_fixed_result(participant_id):
+    auth_error = require_admin()
+    if auth_error:
+        return auth_error
+
+    store = load_store()
+    participant = find_by_id(store["participants"], participant_id)
+    result = participant and find_result_for_participant(store, participant_id)
+    if not participant or not result:
+        return jsonify({"ok": False, "error": "没有找到这个固定结果。"}), 404
+
+    try:
+        unfix_result(store, participant, result)
+    except ValueError as error:
+        return jsonify({"ok": False, "error": str(error)}), 400
+
+    save_store(store)
+    return jsonify({"ok": True})
+
+
 @app.post("/api/admin/draw")
 def draw():
     auth_error = require_admin()
@@ -594,7 +893,7 @@ def reset_draw():
         return auth_error
 
     store = load_store()
-    store["results"] = []
+    store["results"] = get_fixed_results(store)
     store["settings"]["draw_locked"] = "0"
     save_store(store)
     return jsonify({"ok": True})

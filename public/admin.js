@@ -113,6 +113,7 @@ function render() {
   renderRestrictionForm();
   renderRestrictions();
   renderResults();
+  renderFixedResults();
 }
 
 // 渲染参与者列表。
@@ -146,10 +147,13 @@ function renderEntries() {
         <div class="field-list">
           ${state.fields.map((field) => {
             const blocked = isFieldBlocked(entry.id, field.key);
+            const manualBlocked = isManuallyFieldBlocked(entry.id, field.key);
+            const fixedBlocked = isFixedFieldBlocked(entry.id, field.key);
+            const buttonText = fixedBlocked && !manualBlocked ? "固定中" : manualBlocked ? "恢复" : "全员禁抽";
             return `
               <div class="field-line ${blocked ? "blocked" : ""}">
                 <span><strong>${escapeHtml(field.label)}</strong>：${escapeHtml(entry[field.key] || "未填")}</span>
-                <button data-toggle-field="${entry.id}:${field.key}" type="button">${blocked ? "恢复" : "全员禁抽"}</button>
+                <button data-toggle-field="${entry.id}:${field.key}" type="button" ${fixedBlocked && !manualBlocked ? "disabled" : ""}>${buttonText}</button>
               </div>
             `;
           }).join("")}
@@ -166,7 +170,7 @@ function renderEntries() {
       const [entryId, fieldKey] = button.dataset.toggleField.split(":");
       await adminAction(async () => request("/api/admin/field-blocks", {
         method: "PATCH",
-        body: JSON.stringify({ entryId, fieldKey, globallyBlocked: !isFieldBlocked(Number(entryId), fieldKey) })
+        body: JSON.stringify({ entryId, fieldKey, globallyBlocked: !isManuallyFieldBlocked(Number(entryId), fieldKey) })
       }), "字段禁抽状态已更新。");
     });
   });
@@ -231,6 +235,24 @@ function isFieldBlocked(entryId, fieldKey) {
   return state.fieldBlocks.some((block) => block.entry_id === Number(entryId) && block.field_key === fieldKey);
 }
 
+// 判断某个字段值是否被管理员手动全员禁抽。
+function isManuallyFieldBlocked(entryId, fieldKey) {
+  return state.fieldBlocks.some((block) => (
+    block.entry_id === Number(entryId)
+    && block.field_key === fieldKey
+    && block.reason !== "fixed_result"
+  ));
+}
+
+// 判断某个字段值是否因为固定结果进入了固定池。
+function isFixedFieldBlocked(entryId, fieldKey) {
+  return state.fieldBlocks.some((block) => (
+    block.entry_id === Number(entryId)
+    && block.field_key === fieldKey
+    && block.reason === "fixed_result"
+  ));
+}
+
 // 渲染开奖结果。
 function renderResults() {
   const wrap = document.querySelector("#results");
@@ -240,6 +262,118 @@ function renderResults() {
       <span class="muted">${escapeHtml(result.head || "-")} / ${escapeHtml(result.torso || "-")} / ${escapeHtml(result.personality || "-")}</span>
     </div>
   `).join("") || `<p class="muted">开奖后这里会显示结果。</p>`;
+}
+
+// 渲染管理员可修改的固定结果。
+function renderFixedResults() {
+  const wrap = document.querySelector("#fixedResults");
+  const fixedResults = state.results.filter((result) => result.fixed);
+  const unfixedResults = state.results.filter((result) => !result.fixed);
+  wrap.innerHTML = `
+    ${fixedResults.map(renderFixedResultCard).join("") || `<p class="muted">还没有固定结果。</p>`}
+    ${unfixedResults.length ? `
+      <div class="fixed-candidates">
+        <h3>可加入固定池</h3>
+        ${unfixedResults.map((result) => `
+          <div class="row">
+            <span>${escapeHtml(result.participant_name)} 的当前结果</span>
+            <button data-admin-fix-result="${result.participant_id}" type="button">固定</button>
+          </div>
+        `).join("")}
+      </div>
+    ` : ""}
+  `;
+
+  wrap.querySelectorAll("[data-admin-fix-result]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const participantId = Number(button.dataset.adminFixResult);
+      const result = findResult(participantId);
+      if (!confirm(`确认固定 ${result.participant_name} 的此次结果？这些字段值会从之后的抽奖池移除。`)) return;
+      await adminAction(
+        async () => request(`/api/admin/fixed-results/${participantId}`, { method: "POST", body: "{}" }),
+        "结果已固定。"
+      );
+    });
+  });
+
+  wrap.querySelectorAll("[data-unfix-result]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const participantId = Number(button.dataset.unfixResult);
+      const result = findResult(participantId);
+      if (!confirm(`确认取消固定 ${result.participant_name} 的结果？这些字段值会从固定池释放。`)) return;
+      await adminAction(
+        async () => request(`/api/admin/fixed-results/${participantId}`, { method: "DELETE" }),
+        "固定已取消。"
+      );
+    });
+  });
+
+  wrap.querySelectorAll("[data-change-fixed-field]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const [participantIdText, fieldKey] = button.dataset.changeFixedField.split(":");
+      const participantId = Number(participantIdText);
+      const select = wrap.querySelector(`[data-fixed-select="${participantId}:${fieldKey}"]`);
+      const entryId = Number(select.value);
+      const result = findResult(participantId);
+      const field = state.fields.find((item) => item.key === fieldKey);
+      const entry = findEntry(entryId);
+      const currentEntryId = result.sources?.[fieldKey];
+      const oldValue = result[fieldKey] || "-";
+      const newValue = entry?.[fieldKey] || "-";
+      if (!entryId || entryId === currentEntryId) return;
+      if (!confirm(`确认把 ${result.participant_name} 的${field.label}从「${oldValue}」改成「${newValue}」？固定池会同步更新。`)) return;
+      await adminAction(async () => request(`/api/admin/fixed-results/${participantId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ fieldKey, entryId })
+      }), "固定结果已更新。");
+    });
+  });
+}
+
+// 渲染单个固定结果卡片。
+function renderFixedResultCard(result) {
+  return `
+    <div class="fixed-card">
+      <div class="panel-head compact-head">
+        <h3>${escapeHtml(result.participant_name)}</h3>
+        <button class="secondary danger" data-unfix-result="${result.participant_id}" type="button">取消固定</button>
+      </div>
+      <div class="field-list">
+        ${state.fields.map((field) => renderFixedFieldLine(result, field)).join("")}
+      </div>
+    </div>
+  `;
+}
+
+// 渲染固定结果里的单个字段编辑行。
+function renderFixedFieldLine(result, field) {
+  const currentEntryId = result.sources?.[field.key];
+  const options = state.entries
+    .filter((entry) => String(entry[field.key] || "").trim())
+    .map((entry) => `
+      <option value="${entry.id}" ${entry.id === currentEntryId ? "selected" : ""}>
+        ${escapeHtml(entry[field.key])}（${escapeHtml(entry.creator_name)}）
+      </option>
+    `).join("");
+  return `
+    <div class="fixed-field-line">
+      <span><strong>${escapeHtml(field.label)}</strong>：${escapeHtml(result[field.key] || "-")}</span>
+      <div class="fixed-field-edit">
+        <select data-fixed-select="${result.participant_id}:${field.key}">${options}</select>
+        <button data-change-fixed-field="${result.participant_id}:${field.key}" type="button">更换</button>
+      </div>
+    </div>
+  `;
+}
+
+// 根据参与者 id 找到开奖结果。
+function findResult(participantId) {
+  return state.results.find((result) => result.participant_id === participantId);
+}
+
+// 根据词条 id 找到提交词条。
+function findEntry(entryId) {
+  return state.entries.find((entry) => entry.id === entryId);
 }
 
 // 转义用户提交内容，避免 HTML 注入。

@@ -3,24 +3,33 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>词条抽奖工具</title>
+    <title>娘娘保佑抽签工具</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
-  <body>
+  <body class="oracle-theme">
     <main class="shell">
-      <section class="hero">
+      <section class="hero sign-hero">
         <div>
-          <p class="eyebrow">Temporary Entry Draw</p>
-          <h1>词条提交与抽奖</h1>
-          <p class="lead">提交你的词条和角色属性。管理员统一开奖后，可以用参与者名字查询抽到的结果。</p>
+          <p class="eyebrow">Niangniang Oracle</p>
+          <h1>娘娘保佑抽签处</h1>
+          <p class="lead">写入你的签文词条。统一开奖后，用参与者名字来求签，签文会从所有提交栏里随机组合。</p>
+        </div>
+        <div class="oracle-visual" aria-hidden="true">
+          <div class="tube">
+            <span></span>
+            <span></span>
+            <span></span>
+          </div>
+          <p>灵签筒</p>
         </div>
         <a class="ghost-link" href="/admin">管理员入口</a>
       </section>
 
       <section class="grid two">
-        <form class="panel" id="entryForm">
-          <h2>提交词条</h2>
-          <label>提交人名字 <input name="creatorName" required autocomplete="name" /></label>
+        <form class="panel sign-panel write-panel" id="entryForm">
+          <p class="eyebrow">Write a Slip</p>
+          <h2>写入签文</h2>
+          <label>写签人 <input name="creatorName" required autocomplete="name" /></label>
           <div class="split">
             <label>头 <input name="head" required /></label>
             <label>躯干 <input name="torso" required /></label>
@@ -30,14 +39,15 @@
             <label>自由特征 2 <input name="featureTwo" required /></label>
           </div>
           <label>性格 <textarea name="personality" rows="4" required></textarea></label>
-          <button type="submit">提交词条</button>
+          <button type="submit">投进签筒</button>
           <p class="message" id="entryMessage"></p>
         </form>
 
-        <form class="panel" id="resultForm">
-          <h2>查询结果</h2>
+        <form class="panel sign-panel draw-panel" id="resultForm">
+          <p class="eyebrow">Draw a Slip</p>
+          <h2>求签查结果</h2>
           <label>参与者名字 <input name="name" required /></label>
-          <button type="submit">查看我抽到了什么</button>
+          <button type="submit">请娘娘赐签</button>
           <div class="result-card hidden" id="resultCard"></div>
           <p class="message" id="resultMessage"></p>
         </form>

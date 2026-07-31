@@ -1,14 +1,16 @@
 :root {
   color-scheme: light;
-  --bg: #f6f3ee;
-  --ink: #202124;
-  --muted: #6b6259;
-  --panel: #fffefa;
-  --line: #ded7cc;
-  --accent: #247c6d;
-  --accent-dark: #15584d;
-  --danger: #b84135;
-  --soft: #e9f3ef;
+  --bg: #f7f1e6;
+  --ink: #211d1a;
+  --muted: #6d5f50;
+  --panel: #fffaf0;
+  --line: #dfcba9;
+  --accent: #a42f25;
+  --accent-dark: #742018;
+  --danger: #7f2438;
+  --soft: #f5e3c2;
+  --jade: #1d6f5e;
+  --gold: #b5852c;
 }
 
 * {
@@ -17,7 +19,11 @@
 
 body {
   margin: 0;
-  background: var(--bg);
+  background:
+    linear-gradient(90deg, rgba(116, 32, 24, 0.04) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(181, 133, 44, 0.06) 1px, transparent 1px),
+    var(--bg);
+  background-size: 28px 28px;
   color: var(--ink);
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   line-height: 1.5;
@@ -41,9 +47,14 @@ body {
   padding-bottom: 12px;
 }
 
+.sign-hero {
+  align-items: center;
+  position: relative;
+}
+
 .eyebrow {
   margin: 0 0 8px;
-  color: var(--accent-dark);
+  color: var(--jade);
   font-size: 0.82rem;
   font-weight: 800;
   text-transform: uppercase;
@@ -74,6 +85,76 @@ h2 {
   font-size: 1.08rem;
 }
 
+.oracle-visual {
+  display: grid;
+  place-items: center;
+  gap: 8px;
+  min-width: 150px;
+  color: var(--accent-dark);
+  font-weight: 900;
+}
+
+.tube {
+  position: relative;
+  width: 118px;
+  height: 142px;
+  border: 3px solid var(--accent-dark);
+  border-radius: 18px 18px 28px 28px;
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.28), transparent 38%),
+    linear-gradient(180deg, #c83c31, #8f261f);
+  box-shadow: inset 0 -12px 0 rgba(0, 0, 0, 0.12), 0 16px 26px rgba(116, 32, 24, 0.18);
+}
+
+.tube::before {
+  content: "";
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  top: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--gold);
+}
+
+.tube::after {
+  content: "签";
+  position: absolute;
+  inset: 48px 30px auto;
+  display: grid;
+  place-items: center;
+  height: 46px;
+  border: 2px solid rgba(255, 250, 240, 0.82);
+  border-radius: 999px;
+  color: #fffaf0;
+  font-size: 1.5rem;
+  font-weight: 900;
+}
+
+.tube span {
+  position: absolute;
+  top: -38px;
+  width: 15px;
+  height: 78px;
+  border: 2px solid var(--gold);
+  border-radius: 999px;
+  background: #fff8df;
+}
+
+.tube span:nth-child(1) {
+  left: 24px;
+  transform: rotate(-10deg);
+}
+
+.tube span:nth-child(2) {
+  left: 50px;
+}
+
+.tube span:nth-child(3) {
+  right: 24px;
+  transform: rotate(10deg);
+}
+
 .grid {
   display: grid;
   gap: 20px;
@@ -97,6 +178,29 @@ h2 {
   box-shadow: 0 10px 30px rgba(70, 56, 35, 0.07);
 }
 
+.sign-panel {
+  position: relative;
+  border: 2px solid var(--line);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(255, 250, 240, 0.92)),
+    var(--panel);
+}
+
+.sign-panel::before {
+  content: "";
+  position: absolute;
+  inset: 10px;
+  pointer-events: none;
+  border: 1px solid rgba(181, 133, 44, 0.35);
+  border-radius: 6px;
+}
+
+.write-panel h2,
+.draw-panel h2 {
+  color: var(--accent-dark);
+  font-size: 1.45rem;
+}
+
 .login-panel {
   max-width: 420px;
 }
@@ -110,6 +214,14 @@ h2 {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.compact-head {
+  margin-bottom: 12px;
+}
+
+.compact-head h3 {
+  margin-bottom: 0;
 }
 
 .entry-row {
@@ -235,6 +347,7 @@ button.danger,
 .ghost-link {
   border: 1px solid var(--line);
   border-radius: 8px;
+  background: rgba(255, 250, 240, 0.72);
   color: var(--accent-dark);
   font-weight: 800;
   padding: 10px 12px;
@@ -268,10 +381,89 @@ button.danger,
 
 .result-card {
   margin-top: 16px;
-  border: 1px solid var(--line);
+  border: 2px solid var(--gold);
   border-radius: 8px;
-  background: #fff;
-  padding: 16px;
+  background:
+    linear-gradient(90deg, rgba(164, 47, 37, 0.08) 0 6px, transparent 6px calc(100% - 6px), rgba(164, 47, 37, 0.08) calc(100% - 6px)),
+    #fff9e9;
+  padding: 20px;
+}
+
+.slip-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+}
+
+.slip-head h3 {
+  margin-bottom: 0;
+  color: var(--accent-dark);
+  font-size: 1.35rem;
+}
+
+.result-lines {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.result-lines p {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 10px;
+  margin: 0;
+  border-bottom: 1px dashed rgba(181, 133, 44, 0.5);
+  padding-bottom: 8px;
+}
+
+.result-lines span {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.result-lines strong {
+  color: var(--ink);
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.result-actions {
+  display: grid;
+  gap: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+
+.sacrifice-box {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+}
+
+.sacrifice-box label {
+  margin-bottom: 0;
+}
+
+.status-pill {
+  display: inline-flex;
+  width: fit-content;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fffaf0;
+  font-size: 0.85rem;
+  font-weight: 800;
+  margin-bottom: 14px;
+  padding: 6px 10px;
+}
+
+.seal-pill {
+  border: 2px solid rgba(255, 250, 240, 0.8);
+  transform: rotate(-5deg);
 }
 
 .list {
@@ -292,10 +484,44 @@ button.danger,
   align-items: flex-start;
 }
 
+.fixed-results {
+  display: grid;
+  gap: 16px;
+}
+
+.fixed-card,
+.fixed-candidates {
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 16px;
+}
+
+.fixed-card:last-child,
+.fixed-candidates:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.fixed-field-line {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 10px;
+}
+
+.fixed-field-edit {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
 @media (max-width: 800px) {
   .hero,
   .panel-head,
+  .slip-head,
   .actions,
+  .sacrifice-box,
   .entry-row {
     align-items: stretch;
     flex-direction: column;
@@ -303,7 +529,9 @@ button.danger,
 
   .two,
   .admin-grid,
-  .split {
+  .split,
+  .sacrifice-box,
+  .fixed-field-edit {
     grid-template-columns: 1fr;
   }
 
@@ -311,5 +539,13 @@ button.danger,
   button,
   .button-link {
     width: 100%;
+  }
+
+  .oracle-visual {
+    order: -1;
+  }
+
+  .result-lines p {
+    grid-template-columns: 1fr;
   }
 }
