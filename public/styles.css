@@ -94,6 +94,22 @@ h2 {
   font-weight: 900;
 }
 
+.oracle-admin-link {
+  border-radius: 18px;
+  text-decoration: none;
+  transition: transform 160ms ease, filter 160ms ease;
+}
+
+.oracle-admin-link:hover {
+  filter: brightness(1.06);
+  transform: translateY(-3px);
+}
+
+.oracle-admin-link:focus-visible {
+  outline: 3px solid var(--gold);
+  outline-offset: 6px;
+}
+
 .tube {
   position: relative;
   width: 118px;
