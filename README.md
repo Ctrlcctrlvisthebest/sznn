@@ -1,8 +1,12 @@
 # Entry Draw Tool
 
-这是一个临时互动抽奖网页工具。参与者提交一组角色要素，管理员统一开奖，系统会把每个字段分别随机抽取并组合成结果。
+这是一个 Python / Flask 做的临时互动抽奖网页工具。参与者提交一组角色要素，管理员统一开奖，系统会把每个字段分别随机抽取并组合成结果。
 
-这个版本已经改成 **Cloudflare Workers + Static Assets + Workers KV**，可以部署到 Cloudflare Workers。
+数据保存在本地文件：
+
+```text
+data/store.json
+```
 
 ## 当前规则
 
@@ -15,121 +19,102 @@
 - 禁抽是精确到单个字段的，例如禁掉 `头：灰短发` 不会禁掉同一提交里的 `躯干` 或 `性格`
 - 开奖后会锁定提交，管理员可以重置结果后重新开奖
 
-## 项目结构
+## 本地运行
+
+需要 Python 3.10+。
+
+第一次运行：
+
+```bash
+cd /Users/zoeli/Desktop/w
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+ADMIN_PASSWORD=sznnszl SESSION_SECRET=replace-with-a-long-random-string python app.py
+```
+
+之后每次运行：
+
+```bash
+cd /Users/zoeli/Desktop/w
+source .venv/bin/activate
+ADMIN_PASSWORD=sznnszl SESSION_SECRET=replace-with-a-long-random-string python app.py
+```
+
+打开：
 
 ```text
-public/
-  index.html      参与者提交页
-  admin.html      管理员后台页面
-  main.js         提交页和查询页的前端逻辑
-  admin.js        后台管理前端逻辑
-  styles.css      页面样式
-
-src/
-  worker.js       Cloudflare Workers 入口，包含 API、开奖逻辑、KV 数据读写
-  server.js       旧 Node/Express 版本，保留给参考
-  db.js           旧本地 JSON 数据层，保留给参考
-  draw.js         旧本地开奖逻辑，保留给参考
-
-wrangler.toml     Cloudflare Workers 配置
+http://127.0.0.1:5000
 ```
 
-## 本地运行 Cloudflare Worker
+管理员后台：
 
-需要 Node.js 20+。
+```text
+http://127.0.0.1:5000/admin
+```
 
-第一次安装依赖：
+## 修改管理员密码
+
+本地运行时改命令里的 `ADMIN_PASSWORD`：
 
 ```bash
-pnpm install
+ADMIN_PASSWORD=你的新密码 SESSION_SECRET=replace-with-a-long-random-string python app.py
 ```
 
-复制本地环境变量文件：
-
-```bash
-cp .dev.vars.example .dev.vars
-```
-
-然后打开 `.dev.vars`，设置：
+部署到服务器时，在服务器平台的环境变量里设置：
 
 ```text
 ADMIN_PASSWORD=你的后台密码
 SESSION_SECRET=一串很长的随机字符串
 ```
 
-启动本地 Cloudflare Worker：
+## 部署到 Render / 普通服务器
 
-```bash
-pnpm dev
-```
-
-Wrangler 会显示一个本地地址，通常类似：
+Render 配置：
 
 ```text
-http://localhost:8787
+Build Command: pip install -r requirements.txt
+Start Command: gunicorn app:app
 ```
 
-管理员后台：
+环境变量：
 
 ```text
-http://localhost:8787/admin
+ADMIN_PASSWORD=你的后台密码
+SESSION_SECRET=一串很长的随机字符串
 ```
 
-## 部署到 Cloudflare Workers
+如果平台没有持久磁盘，`data/store.json` 可能会在重启后丢失。正式活动建议用带持久磁盘的平台，或者之后换数据库。
 
-### 1. 登录 Cloudflare
+## 项目结构
 
-```bash
-npx wrangler login
+```text
+app.py              Python / Flask 后端入口
+requirements.txt   Python 依赖
+Procfile           部署平台可用的启动命令
+runtime.txt        Python 版本提示
+
+public/
+  index.html       参与者提交页
+  admin.html       管理员后台页面
+  main.js          提交页和查询页的前端逻辑
+  admin.js         后台管理前端逻辑
+  styles.css       页面样式
+
+data/
+  store.json       本地数据文件，不提交到 GitHub
 ```
 
-### 2. 创建 KV namespace
+## GitHub 提醒
 
-```bash
-npx wrangler kv namespace create DATA
+`.gitignore` 已经排除了：
+
+```text
+.venv/
+__pycache__/
+data/
+.env
+.DS_Store
 ```
 
-命令会输出类似：
-
-```toml
-[[kv_namespaces]]
-binding = "DATA"
-id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-```
-
-把输出里的 `id` 复制到 `wrangler.toml`，替换：
-
-```toml
-id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
-```
-
-### 3. 设置线上密钥
-
-```bash
-npx wrangler secret put ADMIN_PASSWORD
-npx wrangler secret put SESSION_SECRET
-```
-
-第一个填后台密码，第二个填一串很长的随机字符串。
-
-### 4. 部署
-
-```bash
-pnpm deploy
-```
-
-部署完成后，Cloudflare 会给一个 `.workers.dev` 地址。参与者访问根地址，管理员访问 `/admin`。
-
-## 注意事项
-
-- 现在数据保存在 Cloudflare KV 里，不再使用本地 `data/store.json`
-- KV 很适合临时测试，但它不是强事务数据库；如果很多人同一秒同时提交，极端情况下可能有写入覆盖风险
-- 一天测试、小规模试用通常没问题；正式活动如果很看重数据安全，建议之后换 D1 或 Durable Object
-- `.dev.vars` 里有密码，不要提交到 GitHub
-- `wrangler.toml` 里的 KV namespace id 可以提交，它不是密码
-
-## 参考
-
-- Cloudflare Workers Static Assets: https://developers.cloudflare.com/workers/static-assets/
-- Cloudflare KV bindings: https://developers.cloudflare.com/kv/concepts/kv-bindings/
-- Cloudflare Workers secrets: https://developers.cloudflare.com/workers/configuration/secrets/
+所以依赖环境、本地数据和密码不会被上传。
