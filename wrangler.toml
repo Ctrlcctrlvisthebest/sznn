@@ -1,0 +1,11 @@
+name = "sznn"
+main = "src/worker.js"
+compatibility_date = "2026-07-29"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+[[kv_namespaces]]
+binding = "DATA"
+id = "eaf38e30c4ea41e8af102cf4234029bf"

@@ -1,2 +1,2 @@
-ADMIN_PASSWORD=change-me-before-sharing
+ADMIN_PASSWORD=admin
 SESSION_SECRET=replace-with-a-long-random-string

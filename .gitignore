@@ -1,4 +1,7 @@
 node_modules/
 data/
+work/
+.wrangler/
 .env
+.dev.vars
 .DS_Store

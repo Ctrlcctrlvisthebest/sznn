@@ -2,7 +2,7 @@
 
 这是一个临时互动抽奖网页工具。参与者提交一组角色要素，管理员统一开奖，系统会把每个字段分别随机抽取并组合成结果。
 
-这个版本适合一天到一个月的小规模测试。数据默认保存在服务器本地的 `data/store.json`。
+这个版本已经改成 **Cloudflare Workers + Static Assets + Workers KV**，可以部署到 Cloudflare Workers。
 
 ## 当前规则
 
@@ -15,63 +15,9 @@
 - 禁抽是精确到单个字段的，例如禁掉 `头：灰短发` 不会禁掉同一提交里的 `躯干` 或 `性格`
 - 开奖后会锁定提交，管理员可以重置结果后重新开奖
 
-## 给技术朋友的快速运行方式
-
-需要 Node.js 20+ 和 pnpm。
-
-``` bash
-pnpm install
-pnpm dev
-```
-
-本地打开：
-
-``` text
-http://localhost:3000
-```
-
-管理员后台：
-
-``` text
-http://localhost:3000/admin
-```
-
-默认管理员密码是 `admin`。建议本地测试时创建 `.env`：
-
-``` bash
-cp .env.example .env
-```
-
-然后改：
-
-``` text
-ADMIN_PASSWORD=你的后台密码
-SESSION_SECRET=一串很长的随机字符串
-```
-
-## Render 一天测试部署
-
-这个项目不能用 GitHub Pages，因为它需要后端保存提交和开奖结果。可以把代码传到 GitHub，然后用 Render 免费 Web Service 测一天。
-
-Render 配置：
-
-``` text
-Build Command: pnpm install
-Start Command: pnpm start
-```
-
-环境变量：
-
-``` text
-ADMIN_PASSWORD=你的后台密码
-SESSION_SECRET=一串很长的随机字符串
-```
-
-部署后访问 Render 给出的公网地址。管理员后台是在地址后面加 `/admin`。
-
 ## 项目结构
 
-``` text
+```text
 public/
   index.html      参与者提交页
   admin.html      管理员后台页面
@@ -80,26 +26,110 @@ public/
   styles.css      页面样式
 
 src/
-  server.js       Express 后端接口
-  db.js           JSON 文件数据读写
-  draw.js         随机组合开奖逻辑
+  worker.js       Cloudflare Workers 入口，包含 API、开奖逻辑、KV 数据读写
+  server.js       旧 Node/Express 版本，保留给参考
+  db.js           旧本地 JSON 数据层，保留给参考
+  draw.js         旧本地开奖逻辑，保留给参考
 
-data/
-  store.json      运行后自动生成，本地数据文件，不提交到 Git
+wrangler.toml     Cloudflare Workers 配置
 ```
 
-## 数据说明
+## 本地运行 Cloudflare Worker
 
-`data/store.json` 里主要有这些数组：
+需要 Node.js 20+。
 
-- `participants`：参与者名单
-- `entries`：用户提交的字段池
-- `fieldBlocks`：全员禁抽的字段值
-- `restrictions`：单人禁抽的字段值
-- `results`：开奖结果
+第一次安装依赖：
 
-## 重要提醒
+```bash
+pnpm install
+```
 
-免费托管平台可能会休眠或重启，本地 JSON 数据有丢失风险。一天测试可以；正式活动建议换成真正数据库，或者部署到有持久磁盘的服务上。
+复制本地环境变量文件：
 
-如果要清空全部测试数据，可以停止服务后删除 `data/store.json`，再重新启动。
+```bash
+cp .dev.vars.example .dev.vars
+```
+
+然后打开 `.dev.vars`，设置：
+
+```text
+ADMIN_PASSWORD=你的后台密码
+SESSION_SECRET=一串很长的随机字符串
+```
+
+启动本地 Cloudflare Worker：
+
+```bash
+pnpm dev
+```
+
+Wrangler 会显示一个本地地址，通常类似：
+
+```text
+http://localhost:8787
+```
+
+管理员后台：
+
+```text
+http://localhost:8787/admin
+```
+
+## 部署到 Cloudflare Workers
+
+### 1. 登录 Cloudflare
+
+```bash
+npx wrangler login
+```
+
+### 2. 创建 KV namespace
+
+```bash
+npx wrangler kv namespace create DATA
+```
+
+命令会输出类似：
+
+```toml
+[[kv_namespaces]]
+binding = "DATA"
+id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+```
+
+把输出里的 `id` 复制到 `wrangler.toml`，替换：
+
+```toml
+id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+```
+
+### 3. 设置线上密钥
+
+```bash
+npx wrangler secret put ADMIN_PASSWORD
+npx wrangler secret put SESSION_SECRET
+```
+
+第一个填后台密码，第二个填一串很长的随机字符串。
+
+### 4. 部署
+
+```bash
+pnpm deploy
+```
+
+部署完成后，Cloudflare 会给一个 `.workers.dev` 地址。参与者访问根地址，管理员访问 `/admin`。
+
+## 注意事项
+
+- 现在数据保存在 Cloudflare KV 里，不再使用本地 `data/store.json`
+- KV 很适合临时测试，但它不是强事务数据库；如果很多人同一秒同时提交，极端情况下可能有写入覆盖风险
+- 一天测试、小规模试用通常没问题；正式活动如果很看重数据安全，建议之后换 D1 或 Durable Object
+- `.dev.vars` 里有密码，不要提交到 GitHub
+- `wrangler.toml` 里的 KV namespace id 可以提交，它不是密码
+
+## 参考
+
+- Cloudflare Workers Static Assets: https://developers.cloudflare.com/workers/static-assets/
+- Cloudflare KV bindings: https://developers.cloudflare.com/kv/concepts/kv-bindings/
+- Cloudflare Workers secrets: https://developers.cloudflare.com/workers/configuration/secrets/
