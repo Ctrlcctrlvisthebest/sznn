@@ -165,6 +165,14 @@ def add_entry(store, data):
     return entry
 
 
+def creator_name_exists(store, creator_name):
+    normalized_name = creator_name.strip().casefold()
+    return any(
+        str(entry.get("creator_name", "")).strip().casefold() == normalized_name
+        for entry in store["entries"]
+    )
+
+
 def remove_participant(store, participant_id):
     store["participants"] = [
         participant for participant in store["participants"] if participant["id"] != participant_id
@@ -1011,6 +1019,8 @@ def create_entry():
     creator_name = str(data.get("creatorName", "")).strip()
     if not creator_name:
         return jsonify({"ok": False, "error": "提交人必填。"}), 400
+    if creator_name_exists(store, creator_name):
+        return jsonify({"ok": False, "error": "这个名字已经提交过词条，不能重复提交。"}), 400
     if store["settings"].get("draw_locked") == "1":
         return jsonify({"ok": False, "error": "已经开奖，不能继续提交词条。"}), 400
 
