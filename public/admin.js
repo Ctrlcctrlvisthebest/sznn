@@ -5,8 +5,10 @@ async function request(url, options = {}) {
     headers: { "Content-Type": "application/json", ...(options.headers || {}) },
     ...options
   });
-  // 解析后端 JSON 响应。
-  const data = await res.json();
+  const contentType = res.headers.get("content-type") || "";
+  const data = contentType.includes("application/json")
+    ? await res.json()
+    : { error: (await res.text()).trim() || "服务器返回了无法识别的响应" };
   // 非 2xx 时抛出错误，方便统一显示。
   if (!res.ok) throw new Error(data.error || "请求失败");
   // 返回响应数据。
@@ -142,7 +144,7 @@ function render() {
   document.querySelector("#drawButton").disabled = state.drawLocked;
   document.querySelector("#openSacrificeButton").disabled = !state.drawLocked || state.sacrificeOpen;
   document.querySelector("#secondDrawButton").disabled = !state.sacrificeOpen;
-  document.querySelector("#poolCount").textContent = `${state.secondPool.length} 可抽 / ${state.secondPoolHistory.length} 已结算`;
+  document.querySelector("#poolCount").textContent = `${state.secondPool.length} 可抽`;
 
   renderParticipants();
   renderEntries();
@@ -344,24 +346,18 @@ function renderSideQuests() {
 function renderSecondPool() {
   const wrap = document.querySelector("#secondPool");
   const activeItems = state.secondPool.map((item) => ({ ...item, status: "active" }));
-  const historyItems = [...state.secondPoolHistory].reverse();
-  wrap.innerHTML = [...activeItems, ...historyItems].map((item) => {
+  wrap.innerHTML = activeItems.map((item) => {
     const field = state.fields.find((candidate) => candidate.key === item.field_key);
     const participant = state.participants.find((candidate) => candidate.id === item.participant_id);
     const reasonLabels = { sacrifice: "献祭", side_quest: "支线删除", fight_replaced: "打架替换" };
-    const drawnBy = state.participants.find((candidate) => candidate.id === item.drawn_by);
-    const statusText = item.status === "active"
-      ? "当前可抽"
-      : item.status === "drawn"
-        ? `第 ${item.round} 轮抽给 ${drawnBy?.name || "未知"}`
-        : `第 ${item.round} 轮仪式失败`;
+    const statusText = "当前可抽";
     return `
       <div class="row">
         <span><strong>${escapeHtml(field?.label || item.field_key)}</strong>：${escapeHtml(item.value)}</span>
         <span class="muted">${escapeHtml(statusText)} · ${escapeHtml(reasonLabels[item.reason] || item.reason)}${participant ? ` · 来源 ${escapeHtml(participant.name)}` : ""}</span>
       </div>
     `;
-  }).join("") || `<p class="muted">第二轮池和历史记录目前都为空。</p>`;
+  }).join("") || `<p class="muted">第二轮抽取池目前为空。</p>`;
 }
 
 // 转义用户提交内容，避免 HTML 注入。

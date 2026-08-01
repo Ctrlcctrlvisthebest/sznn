@@ -1,18 +1,24 @@
 import csv
+import fcntl
 import hmac
 import io
 import json
 import os
 import random
 import secrets
+import shutil
+import tempfile
 import time
 from copy import deepcopy
+from functools import wraps
 from pathlib import Path
 
 from flask import Flask, Response, jsonify, make_response, request, send_from_directory
+from werkzeug.exceptions import HTTPException
 
 
 STORE_PATH = Path("data/store.json")
+STORE_LOCK_PATH = Path("data/store.lock")
 ADMIN_COOKIE = "admin_session"
 SESSION_MAX_AGE = 60 * 60 * 24 * 30
 
@@ -30,7 +36,6 @@ INITIAL_DATA = {
     "restrictions": [],
     "results": [],
     "secondPool": [],
-    "secondPoolHistory": [],
     "firstDrawUsed": [],
 }
 
@@ -45,14 +50,53 @@ DRAW_FIELDS = [
 ]
 
 app = Flask(__name__, static_folder="public", static_url_path="")
+app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
+
+
+class StoreLoadError(RuntimeError):
+    """Raised when neither the primary store nor its backup can be loaded."""
+
+
+def store_backup_path():
+    return STORE_PATH.with_suffix(f"{STORE_PATH.suffix}.bak")
+
+
+def read_store_file(path):
+    with path.open("r", encoding="utf-8") as file:
+        data = json.load(file)
+    if not isinstance(data, dict):
+        raise ValueError("数据文件顶层必须是对象。")
+    for key in ("participants", "entries", "fieldBlocks", "restrictions", "results"):
+        value = data.get(key, [])
+        if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+            raise ValueError(f"数据字段 {key} 格式错误。")
+    if "settings" in data and not isinstance(data["settings"], dict):
+        raise ValueError("数据设置格式错误。")
+    if "nextIds" in data and not isinstance(data["nextIds"], dict):
+        raise ValueError("ID 计数器格式错误。")
+    return data
 
 
 def load_store():
     if not STORE_PATH.exists():
         return deepcopy(INITIAL_DATA)
 
-    with STORE_PATH.open("r", encoding="utf-8") as file:
-        store = {**deepcopy(INITIAL_DATA), **json.load(file)}
+    try:
+        stored_data = read_store_file(STORE_PATH)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as primary_error:
+        backup_path = store_backup_path()
+        try:
+            stored_data = read_store_file(backup_path)
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as backup_error:
+            raise StoreLoadError("数据文件损坏，且没有可用备份。") from backup_error
+        app.logger.error("主数据文件读取失败，已使用备份：%s", primary_error)
+
+    store = {**deepcopy(INITIAL_DATA), **stored_data}
+    for key in ("participants", "entries", "fieldBlocks", "restrictions", "results"):
+        if not isinstance(store.get(key), list):
+            raise StoreLoadError(f"数据字段 {key} 格式错误。")
+    if not isinstance(store.get("settings"), dict) or not isinstance(store.get("nextIds"), dict):
+        raise StoreLoadError("数据设置或 ID 计数器格式错误。")
 
     store["restrictions"] = [
         {**restriction, "field_key": restriction.get("field_key") or "all"}
@@ -62,7 +106,9 @@ def load_store():
     if store["settings"].get("draw_locked") == "1" and store["settings"].get("phase") == "submission":
         store["settings"]["phase"] = "first_drawn"
     store.setdefault("secondPool", [])
-    store.setdefault("secondPoolHistory", [])
+    # Older stores may contain an ever-growing second-round audit trail. It is
+    # intentionally transient now, so discard it before the next save.
+    store.pop("secondPoolHistory", None)
     store.setdefault("firstDrawUsed", [])
     for participant in store["participants"]:
         participant.setdefault("side_quest_unlocked", False)
@@ -74,8 +120,46 @@ def load_store():
 
 def save_store(store):
     STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with STORE_PATH.open("w", encoding="utf-8") as file:
-        json.dump(store, file, ensure_ascii=False, indent=2)
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=STORE_PATH.parent,
+            prefix=f".{STORE_PATH.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as file:
+            temporary_path = Path(file.name)
+            json.dump(store, file, ensure_ascii=False, indent=2)
+            file.flush()
+            os.fsync(file.fileno())
+        if STORE_PATH.exists():
+            try:
+                read_store_file(STORE_PATH)
+            except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+                pass
+            else:
+                shutil.copy2(STORE_PATH, store_backup_path())
+        os.replace(temporary_path, STORE_PATH)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
+def store_write_locked(view):
+    """Serialize a route's complete read-modify-write cycle across workers."""
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        STORE_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with STORE_LOCK_PATH.open("a+", encoding="utf-8") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                return view(*args, **kwargs)
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    return wrapped
 
 
 def get_admin_password():
@@ -118,6 +202,43 @@ def require_admin():
     if not is_admin_request():
         return jsonify({"ok": False, "error": "需要管理员登录。"}), 401
     return None
+
+
+def parse_positive_int(value):
+    """Return a positive integer, or zero for malformed request input."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return parsed if parsed > 0 else 0
+
+
+@app.errorhandler(StoreLoadError)
+def handle_store_load_error(error):
+    app.logger.exception("无法读取数据文件")
+    return jsonify({"ok": False, "error": str(error)}), 500
+
+
+@app.errorhandler(Exception)
+def handle_unexpected_error(error):
+    if isinstance(error, HTTPException):
+        return jsonify({"ok": False, "error": error.description}), error.code
+    app.logger.exception("未处理的服务器异常")
+    if request.path.startswith("/api/"):
+        return jsonify({"ok": False, "error": "服务器内部错误，请稍后重试或联系管理员。"}), 500
+    return "服务器内部错误。", 500
+
+
+@app.before_request
+def validate_json_object():
+    if (
+        request.path.startswith("/api/")
+        and request.method in ("POST", "PATCH", "PUT", "DELETE")
+        and request.is_json
+    ):
+        data = request.get_json(silent=True)
+        if data is not None and not isinstance(data, dict):
+            return jsonify({"ok": False, "error": "请求 JSON 必须是对象。"}), 400
 
 
 def get_field_label(field_key):
@@ -291,7 +412,7 @@ def assign_field(store, participants, entries, field):
     }
 
 
-def assign_unique_field(store, participants, entries, field, preassigned=None):
+def assign_unique_field(participants, available_entries, field, preassigned=None):
     """Assign one distinct submitted entry token per participant in the first round."""
     preassigned = preassigned or {}
     assignments = dict(preassigned)
@@ -299,13 +420,15 @@ def assign_unique_field(store, participants, entries, field, preassigned=None):
     if len(used_entry_ids) != len(assignments):
         raise ValueError(f"{field['label']}的自有词条发生重复占用，无法完成分配。")
     remaining = [participant for participant in participants if participant["id"] not in assignments]
-    candidates = build_candidates(store, remaining, entries, field["key"])
-    for participant in remaining:
-        candidates[participant["id"]] = [
-            entry for entry in candidates[participant["id"]]
+    candidates = {
+        participant["id"]: [
+            entry for entry in available_entries
             if entry["id"] not in used_entry_ids
         ]
-        random.shuffle(candidates[participant["id"]])
+        for participant in remaining
+    }
+    for available in candidates.values():
+        random.shuffle(available)
 
     entry_owner = {}
 
@@ -354,23 +477,10 @@ def choose_self_match_slots(participants, entries):
     return self_matches
 
 
-def choose_unique_self_match_slots(store, participants, entries):
+def choose_unique_self_match_slots(participants, self_match_options):
     self_matches = {}
     for participant in participants:
-        allowed_by_field = {
-            field["key"]: {
-                entry["id"] for entry in build_candidates(
-                    store, [participant], entries, field["key"]
-                )[participant["id"]]
-            }
-            for field in DRAW_FIELDS
-        }
-        possible_matches = [
-            {"field": field, "entry": entry}
-            for field in DRAW_FIELDS
-            for entry in get_participant_entries(participant, entries)
-            if entry["id"] in allowed_by_field[field["key"]]
-        ]
+        possible_matches = self_match_options.get(participant["name"], [])
         if possible_matches:
             self_matches[participant["id"]] = random.choice(possible_matches)
     return self_matches
@@ -412,17 +522,30 @@ def run_draw(store):
     if not entries:
         raise ValueError("还没有可抽提交。")
 
-    for field in DRAW_FIELDS:
-        field_candidates = build_candidates(store, participants, entries, field["key"])
-        available_entry_ids = {
-            entry["id"]
-            for participant in participants
-            for entry in field_candidates[participant["id"]]
+    # First-round candidates are shared by everyone: manual blocks and
+    # participant restrictions only apply to the second-round pool. Build each
+    # field list once and reuse it throughout matching and retries.
+    entries_by_field = {
+        field["key"]: [
+            entry for entry in entries
             if str(entry.get(field["key"], "")).strip()
-        }
-        if len(available_entry_ids) < len(participants):
+        ]
+        for field in DRAW_FIELDS
+    }
+    self_match_options = {}
+    for field in DRAW_FIELDS:
+        for entry in entries_by_field[field["key"]]:
+            creator_name = str(entry.get("creator_name", "")).strip()
+            if creator_name:
+                self_match_options.setdefault(creator_name, []).append({
+                    "field": field,
+                    "entry": entry,
+                })
+    for field in DRAW_FIELDS:
+        available_count = len(entries_by_field[field["key"]])
+        if available_count < len(participants):
             raise ValueError(
-                f"{field['label']}只有 {len(available_entry_ids)} 个可用投稿词条，但有 {len(participants)} 名参与者；"
+                f"{field['label']}只有 {available_count} 个可用投稿词条，但有 {len(participants)} 名参与者；"
                 "请补充词条后再进行第一次抽取。"
             )
 
@@ -430,7 +553,7 @@ def run_draw(store):
     field_assignments = None
     last_assignment_error = None
     for _ in range(50):
-        self_matches = choose_unique_self_match_slots(store, participants_to_draw, entries)
+        self_matches = choose_unique_self_match_slots(participants_to_draw, self_match_options)
         candidate_assignments = {}
         try:
             for field in DRAW_FIELDS:
@@ -440,7 +563,10 @@ def run_draw(store):
                     if self_matches.get(participant["id"], {}).get("field", {}).get("key") == field["key"]
                 }
                 candidate_assignments[field["key"]] = assign_unique_field(
-                    store, participants_to_draw, entries, field, preassigned
+                    participants_to_draw,
+                    entries_by_field[field["key"]],
+                    field,
+                    preassigned,
                 )
         except ValueError as error:
             last_assignment_error = error
@@ -721,7 +847,6 @@ def run_second_draw(store):
             )
 
     used_tokens = set()
-    pool_history = []
     for result in pending_results:
         participant_failures = []
         second_slip = {
@@ -746,12 +871,6 @@ def run_second_draw(store):
                 )
                 if original_item:
                     used_tokens.add((original_item["entry_id"], field_key))
-                    pool_history.append({
-                        **original_item,
-                        "status": "ritual_failed",
-                        "round": store["settings"]["second_round"],
-                        "resolved_at": now(),
-                    })
                     remove_sacrifice_restriction(
                         store,
                         result["participant_id"],
@@ -772,13 +891,6 @@ def run_second_draw(store):
                 second_slip[field_key] = item["value"]
                 second_slip["sources"][field_key] = item["entry_id"]
                 used_tokens.add((item["entry_id"], field_key))
-                pool_history.append({
-                    **item,
-                    "status": "drawn",
-                    "round": store["settings"]["second_round"],
-                    "drawn_by": result["participant_id"],
-                    "resolved_at": now(),
-                })
         result["pending_sacrifices"] = []
         if is_eligible:
             result["previous_slip"] = result.get("pending_previous_slip", {})
@@ -802,7 +914,6 @@ def run_second_draw(store):
         item for item in store["secondPool"]
         if (item["entry_id"], item["field_key"]) not in used_tokens
     ]
-    store["secondPoolHistory"].extend(pool_history)
     store["settings"]["sacrifice_open"] = False
     store["settings"]["phase"] = "second_drawn"
     return len(pending_results)
@@ -936,7 +1047,6 @@ def build_overview(store):
         "sacrificeOpen": bool(store["settings"].get("sacrifice_open")),
         "secondRound": int(store["settings"].get("second_round") or 0),
         "secondPool": store.get("secondPool", []),
-        "secondPoolHistory": store.get("secondPoolHistory", []),
         "firstDrawUsedCount": len(store.get("firstDrawUsed", [])),
     }
 
@@ -1029,6 +1139,7 @@ def state():
 
 
 @app.post("/api/entries")
+@store_write_locked
 def create_entry():
     store = load_store()
     data = request.get_json(silent=True) or {}
@@ -1081,6 +1192,7 @@ def get_result(name):
 
 
 @app.post("/api/results/<name>/fix")
+@store_write_locked
 def fix_public_result(name):
     store = load_store()
     participant = next((item for item in store["participants"] if item["name"] == name.strip()), None)
@@ -1095,10 +1207,14 @@ def fix_public_result(name):
 
 
 @app.post("/api/results/<name>/sacrifice")
+@store_write_locked
 def sacrifice_public_result(name):
     store = load_store()
     data = request.get_json(silent=True) or {}
-    field_keys = [str(item) for item in data.get("fieldKeys", [])]
+    raw_field_keys = data.get("fieldKeys", [])
+    if not isinstance(raw_field_keys, list):
+        return jsonify({"ok": False, "error": "献祭字段格式不正确。"}), 400
+    field_keys = [str(item) for item in raw_field_keys]
     participant = next((item for item in store["participants"] if item["name"] == name.strip()), None)
     result = participant and find_result_for_participant(store, participant["id"])
     if not result:
@@ -1119,6 +1235,7 @@ def sacrifice_public_result(name):
 
 
 @app.post("/api/results/<name>/side-quest")
+@store_write_locked
 def use_public_side_quest(name):
     store = load_store()
     data = request.get_json(silent=True) or {}
@@ -1150,6 +1267,7 @@ def admin_overview():
 
 
 @app.post("/api/admin/participants")
+@store_write_locked
 def create_participants():
     auth_error = require_admin()
     if auth_error:
@@ -1172,6 +1290,7 @@ def create_participants():
 
 
 @app.delete("/api/admin/participants/<int:participant_id>")
+@store_write_locked
 def delete_participant(participant_id):
     auth_error = require_admin()
     if auth_error:
@@ -1184,6 +1303,7 @@ def delete_participant(participant_id):
 
 
 @app.patch("/api/admin/field-blocks")
+@store_write_locked
 def update_field_block():
     auth_error = require_admin()
     if auth_error:
@@ -1191,7 +1311,7 @@ def update_field_block():
 
     store = load_store()
     data = request.get_json(silent=True) or {}
-    entry_id = int(data.get("entryId") or 0)
+    entry_id = parse_positive_int(data.get("entryId"))
     field_key = str(data.get("fieldKey", ""))
     if not entry_id or not is_valid_field(field_key):
         return jsonify({"ok": False, "error": "请选择要全员禁抽的字段词条。"}), 400
@@ -1201,6 +1321,7 @@ def update_field_block():
 
 
 @app.delete("/api/admin/entries/<int:entry_id>")
+@store_write_locked
 def delete_entry(entry_id):
     auth_error = require_admin()
     if auth_error:
@@ -1213,6 +1334,7 @@ def delete_entry(entry_id):
 
 
 @app.post("/api/admin/restrictions")
+@store_write_locked
 def create_restriction():
     auth_error = require_admin()
     if auth_error:
@@ -1220,8 +1342,8 @@ def create_restriction():
 
     store = load_store()
     data = request.get_json(silent=True) or {}
-    participant_id = int(data.get("participantId") or 0)
-    entry_id = int(data.get("entryId") or 0)
+    participant_id = parse_positive_int(data.get("participantId"))
+    entry_id = parse_positive_int(data.get("entryId"))
     field_key = str(data.get("fieldKey", ""))
     if not participant_id or not entry_id or not is_valid_field(field_key):
         return jsonify({"ok": False, "error": "请选择参与者、字段和词条。"}), 400
@@ -1231,6 +1353,7 @@ def create_restriction():
 
 
 @app.delete("/api/admin/restrictions")
+@store_write_locked
 def delete_restriction():
     auth_error = require_admin()
     if auth_error:
@@ -1240,8 +1363,8 @@ def delete_restriction():
     data = request.get_json(silent=True) or {}
     remove_restriction(
         store,
-        int(data.get("participantId") or 0),
-        int(data.get("entryId") or 0),
+        parse_positive_int(data.get("participantId")),
+        parse_positive_int(data.get("entryId")),
         str(data.get("fieldKey", "")),
     )
     save_store(store)
@@ -1249,6 +1372,7 @@ def delete_restriction():
 
 
 @app.post("/api/admin/fixed-results/<int:participant_id>")
+@store_write_locked
 def create_fixed_result(participant_id):
     auth_error = require_admin()
     if auth_error:
@@ -1266,6 +1390,7 @@ def create_fixed_result(participant_id):
 
 
 @app.patch("/api/admin/fixed-results/<int:participant_id>")
+@store_write_locked
 def edit_fixed_result(participant_id):
     auth_error = require_admin()
     if auth_error:
@@ -1284,7 +1409,7 @@ def edit_fixed_result(participant_id):
             participant,
             result,
             str(data.get("fieldKey", "")),
-            int(data.get("entryId") or 0),
+            parse_positive_int(data.get("entryId")),
         )
     except ValueError as error:
         return jsonify({"ok": False, "error": str(error)}), 400
@@ -1294,6 +1419,7 @@ def edit_fixed_result(participant_id):
 
 
 @app.delete("/api/admin/fixed-results/<int:participant_id>")
+@store_write_locked
 def delete_fixed_result(participant_id):
     auth_error = require_admin()
     if auth_error:
@@ -1315,6 +1441,7 @@ def delete_fixed_result(participant_id):
 
 
 @app.post("/api/admin/draw")
+@store_write_locked
 def draw():
     auth_error = require_admin()
     if auth_error:
@@ -1330,6 +1457,7 @@ def draw():
 
 
 @app.post("/api/admin/sacrifice-round/open")
+@store_write_locked
 def open_admin_sacrifice_round():
     auth_error = require_admin()
     if auth_error:
@@ -1344,6 +1472,7 @@ def open_admin_sacrifice_round():
 
 
 @app.post("/api/admin/second-draw")
+@store_write_locked
 def admin_second_draw():
     auth_error = require_admin()
     if auth_error:
@@ -1358,6 +1487,7 @@ def admin_second_draw():
 
 
 @app.post("/api/admin/side-quest/<int:participant_id>/unlock")
+@store_write_locked
 def admin_unlock_side_quest(participant_id):
     auth_error = require_admin()
     if auth_error:
@@ -1375,6 +1505,7 @@ def admin_unlock_side_quest(participant_id):
 
 
 @app.post("/api/admin/fight")
+@store_write_locked
 def admin_fight():
     auth_error = require_admin()
     if auth_error:
@@ -1396,6 +1527,7 @@ def admin_fight():
 
 
 @app.post("/api/admin/reset-draw")
+@store_write_locked
 def reset_draw():
     auth_error = require_admin()
     if auth_error:
@@ -1404,7 +1536,7 @@ def reset_draw():
     store = load_store()
     store["results"] = []
     store["secondPool"] = []
-    store["secondPoolHistory"] = []
+    store.pop("secondPoolHistory", None)
     store["firstDrawUsed"] = []
     store["restrictions"] = [
         item for item in store["restrictions"]
@@ -1440,4 +1572,8 @@ def export_results():
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=int(os.environ.get("PORT", "5000")), debug=True)
+    app.run(
+        host="127.0.0.1",
+        port=int(os.environ.get("PORT", "5000")),
+        debug=os.environ.get("FLASK_DEBUG") == "1",
+    )

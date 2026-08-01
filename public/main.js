@@ -5,8 +5,10 @@ async function request(url, options = {}) {
     headers: { "Content-Type": "application/json", ...(options.headers || {}) },
     ...options
   });
-  // 后端所有接口都返回 JSON。
-  const data = await res.json();
+  const contentType = res.headers.get("content-type") || "";
+  const data = contentType.includes("application/json")
+    ? await res.json()
+    : { error: (await res.text()).trim() || "服务器返回了无法识别的响应" };
   // HTTP 状态不是 2xx 时，把后端错误抛给页面显示。
   if (!res.ok) throw new Error(data.error || "请求失败");
   // 成功时返回解析后的数据。
