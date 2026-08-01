@@ -31,6 +31,7 @@ INITIAL_DATA = {
     "results": [],
     "secondPool": [],
     "secondPoolHistory": [],
+    "firstDrawUsed": [],
 }
 
 DRAW_FIELDS = [
@@ -62,6 +63,7 @@ def load_store():
         store["settings"]["phase"] = "first_drawn"
     store.setdefault("secondPool", [])
     store.setdefault("secondPoolHistory", [])
+    store.setdefault("firstDrawUsed", [])
     for participant in store["participants"]:
         participant.setdefault("side_quest_unlocked", False)
         participant.setdefault("side_quest_used", False)
@@ -290,53 +292,41 @@ def assign_field(store, participants, entries, field):
 
 
 def assign_unique_field(store, participants, entries, field, preassigned=None):
-    """Assign one distinct displayed value per participant for a first-round field."""
+    """Assign one distinct submitted entry token per participant in the first round."""
     preassigned = preassigned or {}
     assignments = dict(preassigned)
-    assigned_values = [
-        str(entry.get(field["key"], "")).strip()
-        for entry in assignments.values()
-    ]
-    if len(assigned_values) != len(set(assigned_values)):
-        raise ValueError(f"{field['label']}的自有词条出现重复内容，无法完成不重复分配。")
-    used_values = set(assigned_values)
+    used_entry_ids = {entry["id"] for entry in assignments.values()}
+    if len(used_entry_ids) != len(assignments):
+        raise ValueError(f"{field['label']}的自有词条发生重复占用，无法完成分配。")
     remaining = [participant for participant in participants if participant["id"] not in assignments]
     candidates = build_candidates(store, remaining, entries, field["key"])
     for participant in remaining:
         candidates[participant["id"]] = [
             entry for entry in candidates[participant["id"]]
-            if str(entry.get(field["key"], "")).strip() not in used_values
+            if entry["id"] not in used_entry_ids
         ]
+        random.shuffle(candidates[participant["id"]])
 
-    def match(unassigned, used):
-        if not unassigned:
-            return True
-        participant = min(
-            unassigned,
-            key=lambda item: len([
-                entry for entry in candidates[item["id"]]
-                if str(entry.get(field["key"], "")).strip() not in used
-            ]),
-        )
-        available = [
-            entry for entry in candidates[participant["id"]]
-            if str(entry.get(field["key"], "")).strip() not in used
-        ]
-        random.shuffle(available)
-        for entry in available:
-            assignments[participant["id"]] = entry
-            if match(
-                [item for item in unassigned if item["id"] != participant["id"]],
-                used | {str(entry.get(field["key"], "")).strip()},
-            ):
+    entry_owner = {}
+
+    def match_participant(participant_id, seen_entry_ids):
+        for entry in candidates[participant_id]:
+            entry_id = entry["id"]
+            if entry_id in seen_entry_ids:
+                continue
+            seen_entry_ids.add(entry_id)
+            current_owner = entry_owner.get(entry_id)
+            if current_owner is None or match_participant(current_owner, seen_entry_ids):
+                entry_owner[entry_id] = participant_id
+                assignments[participant_id] = entry
                 return True
-            assignments.pop(participant["id"], None)
         return False
 
-    if not match(remaining, used_values):
-        raise ValueError(
-            f"{field['label']}没有足够的互不重复可抽词条，请补充词条或调整禁抽限制。"
-        )
+    for participant in sorted(remaining, key=lambda item: len(candidates[item["id"]])):
+        if not match_participant(participant["id"], set()):
+            raise ValueError(
+                f"{field['label']}没有足够的未使用投稿词条，请补充词条或调整禁抽限制。"
+            )
     return assignments
 
 
@@ -422,10 +412,24 @@ def run_draw(store):
     if not entries:
         raise ValueError("还没有可抽提交。")
 
+    for field in DRAW_FIELDS:
+        field_candidates = build_candidates(store, participants, entries, field["key"])
+        available_entry_ids = {
+            entry["id"]
+            for participant in participants
+            for entry in field_candidates[participant["id"]]
+            if str(entry.get(field["key"], "")).strip()
+        }
+        if len(available_entry_ids) < len(participants):
+            raise ValueError(
+                f"{field['label']}只有 {len(available_entry_ids)} 个可用投稿词条，但有 {len(participants)} 名参与者；"
+                "请补充词条后再进行第一次抽取。"
+            )
+
     participants_to_draw = participants
     field_assignments = None
     last_assignment_error = None
-    for _ in range(200):
+    for _ in range(50):
         self_matches = choose_unique_self_match_slots(store, participants_to_draw, entries)
         candidate_assignments = {}
         try:
@@ -460,6 +464,16 @@ def run_draw(store):
         results.append(result)
 
     store["results"] = results
+    store["firstDrawUsed"] = [
+        {
+            "entry_id": result["sources"][field["key"]],
+            "field_key": field["key"],
+            "participant_id": result["participant_id"],
+            "used_at": now(),
+        }
+        for result in results
+        for field in DRAW_FIELDS
+    ]
     store["settings"]["draw_locked"] = "1"
     store["settings"]["phase"] = "first_drawn"
     store["settings"]["sacrifice_open"] = False
@@ -584,6 +598,7 @@ def open_sacrifice_round(store):
     if any(result.get("pending_sacrifices") for result in store["results"]):
         raise ValueError("还有上一轮待抽取的献祭词条。")
     store["settings"]["second_round"] = int(store["settings"].get("second_round") or 0) + 1
+    store["firstDrawUsed"] = []
     store["settings"]["sacrifice_open"] = True
     store["settings"]["phase"] = "sacrifice_open"
 
@@ -922,6 +937,7 @@ def build_overview(store):
         "secondRound": int(store["settings"].get("second_round") or 0),
         "secondPool": store.get("secondPool", []),
         "secondPoolHistory": store.get("secondPoolHistory", []),
+        "firstDrawUsedCount": len(store.get("firstDrawUsed", [])),
     }
 
 
@@ -1389,6 +1405,7 @@ def reset_draw():
     store["results"] = []
     store["secondPool"] = []
     store["secondPoolHistory"] = []
+    store["firstDrawUsed"] = []
     store["restrictions"] = [
         item for item in store["restrictions"]
         if item.get("reason", "manual") != "sacrifice"
