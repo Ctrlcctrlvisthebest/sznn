@@ -282,16 +282,22 @@ def assign_field(store, participants, entries, field):
 
 
 def assign_unique_field(store, participants, entries, field, preassigned=None):
-    """Assign one distinct entry token per participant for a single field."""
+    """Assign one distinct displayed value per participant for a first-round field."""
     preassigned = preassigned or {}
     assignments = dict(preassigned)
-    used_entry_ids = {entry["id"] for entry in assignments.values()}
+    assigned_values = [
+        str(entry.get(field["key"], "")).strip()
+        for entry in assignments.values()
+    ]
+    if len(assigned_values) != len(set(assigned_values)):
+        raise ValueError(f"{field['label']}的自有词条出现重复内容，无法完成不重复分配。")
+    used_values = set(assigned_values)
     remaining = [participant for participant in participants if participant["id"] not in assignments]
     candidates = build_candidates(store, remaining, entries, field["key"])
     for participant in remaining:
         candidates[participant["id"]] = [
             entry for entry in candidates[participant["id"]]
-            if entry["id"] not in used_entry_ids
+            if str(entry.get(field["key"], "")).strip() not in used_values
         ]
 
     def match(unassigned, used):
@@ -301,25 +307,25 @@ def assign_unique_field(store, participants, entries, field, preassigned=None):
             unassigned,
             key=lambda item: len([
                 entry for entry in candidates[item["id"]]
-                if entry["id"] not in used
+                if str(entry.get(field["key"], "")).strip() not in used
             ]),
         )
         available = [
             entry for entry in candidates[participant["id"]]
-            if entry["id"] not in used
+            if str(entry.get(field["key"], "")).strip() not in used
         ]
         random.shuffle(available)
         for entry in available:
             assignments[participant["id"]] = entry
             if match(
                 [item for item in unassigned if item["id"] != participant["id"]],
-                used | {entry["id"]},
+                used | {str(entry.get(field["key"], "")).strip()},
             ):
                 return True
             assignments.pop(participant["id"], None)
         return False
 
-    if not match(remaining, used_entry_ids):
+    if not match(remaining, used_values):
         raise ValueError(
             f"{field['label']}没有足够的互不重复可抽词条，请补充词条或调整禁抽限制。"
         )
@@ -409,18 +415,28 @@ def run_draw(store):
         raise ValueError("还没有可抽提交。")
 
     participants_to_draw = participants
-    self_matches = choose_unique_self_match_slots(store, participants_to_draw, entries)
-
-    field_assignments = {}
-    for field in DRAW_FIELDS:
-        preassigned = {
-            participant["id"]: self_matches[participant["id"]]["entry"]
-            for participant in participants_to_draw
-            if self_matches.get(participant["id"], {}).get("field", {}).get("key") == field["key"]
-        }
-        field_assignments[field["key"]] = assign_unique_field(
-            store, participants_to_draw, entries, field, preassigned
-        )
+    field_assignments = None
+    last_assignment_error = None
+    for _ in range(200):
+        self_matches = choose_unique_self_match_slots(store, participants_to_draw, entries)
+        candidate_assignments = {}
+        try:
+            for field in DRAW_FIELDS:
+                preassigned = {
+                    participant["id"]: self_matches[participant["id"]]["entry"]
+                    for participant in participants_to_draw
+                    if self_matches.get(participant["id"], {}).get("field", {}).get("key") == field["key"]
+                }
+                candidate_assignments[field["key"]] = assign_unique_field(
+                    store, participants_to_draw, entries, field, preassigned
+                )
+        except ValueError as error:
+            last_assignment_error = error
+            continue
+        field_assignments = candidate_assignments
+        break
+    if field_assignments is None:
+        raise last_assignment_error or ValueError("无法完成第一次不重复抽取。")
 
     results = []
     for participant in participants_to_draw:
