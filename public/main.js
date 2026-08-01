@@ -25,6 +25,24 @@ const resultMessage = document.querySelector("#resultMessage");
 const resultCard = document.querySelector("#resultCard");
 let currentResultName = "";
 
+async function loadPublicPhase() {
+  try {
+    const publicState = await request("/api/state");
+    const statusText = document.querySelector("#oracleStatusText");
+    if (publicState.phase === "second_drawn") {
+      statusText.textContent = "第二轮抽取结束";
+    } else if (publicState.phase === "sacrifice_open") {
+      statusText.textContent = "第二轮献祭中";
+    } else {
+      statusText.textContent = "由此揭签";
+    }
+  } catch (_) {
+    // 状态读取失败时保留页面默认文字。
+  }
+}
+
+loadPublicPhase();
+
 // 监听词条提交。
 entryForm.addEventListener("submit", async (event) => {
   // 阻止浏览器默认刷新页面。
@@ -86,60 +104,131 @@ function renderResult(result) {
     { key: "feature_two", label: "自由特征 2" },
     { key: "personality", label: "性格" }
   ];
-  const options = fields.map((field) => `
-    <option value="${field.key}">${escapeHtml(field.label)}：${escapeHtml(result[field.key] || "未填写")}</option>
+  const eligibleFields = fields.filter((field) => (
+    result.sources?.[field.key]
+    && !["无", "普通人类", "待重抽"].includes(result[field.key])
+  ));
+  const pending = result.pending_sacrifices || [];
+  const ritualFailures = result.ritual_failures || [];
+  const previousSlip = result.has_second_slip && !pending.length ? result.previous_slip : null;
+  const secondSlip = previousSlip ? result.second_slip : result;
+  const renderSlipFields = (slip) => fields.map((field) => `
+    <p><span>${escapeHtml(field.label)}</span><strong>${escapeHtml(slip?.[field.key] || "无")}</strong></p>
   `).join("");
+  const sacrificePanel = result.fixed
+    ? `<p class="muted">此签已供奉，所有部位均已固定。</p>`
+    : result.sacrifice_open
+    ? pending.length
+      ? `<p class="message">已献祭 ${pending.length} 项，等待管理员统一抽取。</p>`
+      : `
+        <div class="sacrifice-box multi-sacrifice">
+          <fieldset>
+            <legend>选择要献祭的部位（至少一项）</legend>
+            ${eligibleFields.map((field) => `
+              <label class="check-field">
+                <input type="checkbox" name="sacrificeField" value="${field.key}" />
+                <span>${escapeHtml(field.label)}：${escapeHtml(result[field.key])}</span>
+              </label>
+            `).join("") || `<p class="muted">没有可献祭的部位。</p>`}
+          </fieldset>
+          <button id="sacrificeButton" class="secondary danger" type="button" ${eligibleFields.length ? "" : "disabled"}>提交献祭</button>
+        </div>
+      `
+    : `<p class="muted">第二轮献祭尚未开启；未献祭的部位会保持固定。</p>`;
+  const sideQuestPanel = !result.fixed && result.side_quest_unlocked && !result.side_quest_used
+    ? `
+      <div class="side-quest-box">
+        <label>支线：选择一个词条化为“普通人类”
+          <select id="sideQuestField">
+            ${eligibleFields.map((field) => `<option value="${field.key}">${escapeHtml(field.label)}：${escapeHtml(result[field.key])}</option>`).join("")}
+          </select>
+        </label>
+        <button id="sideQuestButton" type="button" ${eligibleFields.length ? "" : "disabled"}>化为普通人类</button>
+      </div>
+    ` : "";
 
   resultCard.innerHTML = `
     <div class="slip-head">
       <p class="eyebrow">Oracle Slip</p>
       <h3>${escapeHtml(result.participant_name)} 的灵签</h3>
-      ${result.fixed ? `<p class="status-pill seal-pill">已供奉</p>` : ""}
+      ${result.fixed ? `<p class="status-pill seal-pill">已供奉</p>` : pending.length ? `<p class="status-pill">等待重抽</p>` : ""}
     </div>
-    <div class="result-lines">
-      ${fields.map((field) => `
-        <p><span>${escapeHtml(field.label)}</span><strong>${escapeHtml(result[field.key] || "未填写")}</strong></p>
-      `).join("")}
+    ${ritualFailures.length ? `<div class="ritual-failure"><strong>献祭仪式人数不足，献祭失败</strong><small>以下部位的献祭词条未返还，现为“无”：${ritualFailures.map((key) => escapeHtml(fields.find((field) => field.key === key)?.label || key)).join("、")}</small></div>` : ""}
+    <div class="slip-versions ${previousSlip ? "has-two-slips" : ""}">
+      ${previousSlip ? `
+        <section class="slip-version">
+          <h4>第一张签</h4>
+          <div class="result-lines">${renderSlipFields(previousSlip)}</div>
+        </section>
+      ` : ""}
+      <section class="slip-version">
+        ${previousSlip ? `<h4>第二张签</h4>` : ""}
+        <div class="result-lines">${renderSlipFields(secondSlip)}</div>
+      </section>
     </div>
     <div class="result-actions">
-      <button id="fixResultButton" type="button" ${result.fixed ? "disabled" : ""}>供奉此签</button>
-      <div class="sacrifice-box">
-        <label>献祭一项 <select id="sacrificeField" ${result.fixed ? "disabled" : ""}>${options}</select></label>
-        <button id="sacrificeButton" class="secondary danger" type="button" ${result.fixed ? "disabled" : ""}>献祭并重求</button>
-      </div>
+      <button id="fixResultButton" type="button" ${result.fixed || pending.length ? "disabled" : ""}>${result.fixed ? "此签已供奉" : "供奉此签（固定所有特征）"}</button>
+      ${sideQuestPanel}
+      ${sacrificePanel}
     </div>
   `;
 
-  document.querySelector("#fixResultButton").addEventListener("click", fixCurrentResult);
-  document.querySelector("#sacrificeButton").addEventListener("click", sacrificeCurrentField);
+  document.querySelector("#sacrificeButton")?.addEventListener("click", sacrificeCurrentFields);
+  document.querySelector("#sideQuestButton")?.addEventListener("click", useSideQuest);
+  document.querySelector("#fixResultButton")?.addEventListener("click", fixCurrentResult);
+}
+
+async function refreshCurrentResult() {
+  const { result } = await request(`/api/results/${encodeURIComponent(currentResultName)}`);
+  renderResult(result);
 }
 
 async function fixCurrentResult() {
-  if (!confirm("要把这支签供奉起来吗？供奉后，签上的七项灵文会被娘娘收进签簿，之后其他人求签时不会再抽到这些对应项。")) return;
+  if (!confirm("确认供奉整支签？供奉后所有特征都会固定，不能再献祭、支线删除或参与打架。")) return;
   resultMessage.textContent = "正在供奉...";
   try {
-    const { result } = await request(`/api/results/${encodeURIComponent(currentResultName)}/fix`, {
+    await request(`/api/results/${encodeURIComponent(currentResultName)}/fix`, {
       method: "POST",
       body: "{}"
     });
-    renderResult(result);
-    resultMessage.textContent = "此签已供奉。";
+    await refreshCurrentResult();
+    resultMessage.textContent = "此签已供奉，所有特征均已固定。";
   } catch (error) {
     resultMessage.textContent = error.message;
   }
 }
 
-async function sacrificeCurrentField() {
-  const fieldKey = document.querySelector("#sacrificeField").value;
-  if (!confirm("确认献祭这一项并重新求签？这次重求不会再抽到被献祭的这一项，其他人仍然可以抽到。")) return;
-  resultMessage.textContent = "正在重求...";
+async function sacrificeCurrentFields() {
+  const fieldKeys = [...document.querySelectorAll("[name='sacrificeField']:checked")].map((input) => input.value);
+  if (!fieldKeys.length) {
+    resultMessage.textContent = "请至少选择一个要献祭的部位。";
+    return;
+  }
+  if (!confirm(`确认献祭选中的 ${fieldKeys.length} 个部位？提交后不能修改，并等待管理员统一抽取。`)) return;
+  resultMessage.textContent = "正在提交献祭...";
   try {
-    const { result } = await request(`/api/results/${encodeURIComponent(currentResultName)}/sacrifice`, {
+    await request(`/api/results/${encodeURIComponent(currentResultName)}/sacrifice`, {
+      method: "POST",
+      body: JSON.stringify({ fieldKeys })
+    });
+    await refreshCurrentResult();
+    resultMessage.textContent = "献祭已提交，等待管理员统一抽取。";
+  } catch (error) {
+    resultMessage.textContent = error.message;
+  }
+}
+
+async function useSideQuest() {
+  const fieldKey = document.querySelector("#sideQuestField").value;
+  if (!confirm("确认删除这个词条并变成“普通人类”？该操作每人只能使用一次，原词条会进入第二轮池。")) return;
+  resultMessage.textContent = "正在完成支线...";
+  try {
+    await request(`/api/results/${encodeURIComponent(currentResultName)}/side-quest`, {
       method: "POST",
       body: JSON.stringify({ fieldKey })
     });
-    renderResult(result);
-    resultMessage.textContent = "已重求一签。";
+    await refreshCurrentResult();
+    resultMessage.textContent = "支线已完成，该部位已变成“普通人类”。";
   } catch (error) {
     resultMessage.textContent = error.message;
   }

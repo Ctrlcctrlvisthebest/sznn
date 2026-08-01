@@ -73,8 +73,35 @@ document.querySelector("[name='fieldKey']").addEventListener("change", renderRes
 
 // 一键开奖按钮。
 document.querySelector("#drawButton").addEventListener("click", async () => {
-  if (!confirm("确认现在开奖？开奖后普通用户将不能继续提交词条。")) return;
-  await adminAction(async () => request("/api/admin/draw", { method: "POST", body: "{}" }), "开奖完成。");
+  if (!confirm("确认进行第一次统一抽取？每个部位的词条都不会重复，抽取后将停止提交。")) return;
+  await adminAction(async () => request("/api/admin/draw", { method: "POST", body: "{}" }), "第一次抽取完成。");
+});
+
+document.querySelector("#openSacrificeButton").addEventListener("click", async () => {
+  if (!confirm("确认开启新一轮献祭？参与者至少选择一个可用部位，提交后等待管理员统一抽取。")) return;
+  await adminAction(
+    async () => request("/api/admin/sacrifice-round/open", { method: "POST", body: "{}" }),
+    "献祭阶段已开启。"
+  );
+});
+
+document.querySelector("#secondDrawButton").addEventListener("click", async () => {
+  if (!confirm("确认使用第二轮池为所有已提交献祭的参与者统一抽取？")) return;
+  await adminAction(
+    async () => request("/api/admin/second-draw", { method: "POST", body: "{}" }),
+    "第二次统一抽取完成。"
+  );
+});
+
+document.querySelector("#fightForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const data = Object.fromEntries(new FormData(event.target).entries());
+  const field = state.fields.find((item) => item.key === data.fieldKey);
+  if (!confirm(`确认 ${data.winnerName} 抢走 ${data.loserName} 的${field?.label}？败者该部位将变成“无”，胜者原词条进入第二轮池。`)) return;
+  await adminAction(async () => request("/api/admin/fight", {
+    method: "POST",
+    body: JSON.stringify(data)
+  }), "打架结果已记录。");
 });
 
 // 重置开奖结果按钮。
@@ -105,15 +132,26 @@ async function adminAction(action, message) {
 function render() {
   document.querySelector("#participantCount").textContent = `${state.participants.length} 人`;
   document.querySelector("#entryCount").textContent = `${state.entries.length} 个`;
-  document.querySelector("#drawStatus").textContent = state.drawLocked ? "已开奖" : "未开奖";
+  const phaseLabels = {
+    submission: "等待第一次抽取",
+    first_drawn: "第一次抽取完成",
+    sacrifice_open: `第 ${state.secondRound} 轮献祭中`,
+    second_drawn: `第 ${state.secondRound} 轮抽取完成`
+  };
+  document.querySelector("#drawStatus").textContent = phaseLabels[state.phase] || state.phase;
   document.querySelector("#drawButton").disabled = state.drawLocked;
+  document.querySelector("#openSacrificeButton").disabled = !state.drawLocked || state.sacrificeOpen;
+  document.querySelector("#secondDrawButton").disabled = !state.sacrificeOpen;
+  document.querySelector("#poolCount").textContent = `${state.secondPool.length} 可抽 / ${state.secondPoolHistory.length} 已结算`;
 
   renderParticipants();
   renderEntries();
   renderRestrictionForm();
   renderRestrictions();
   renderResults();
-  renderFixedResults();
+  renderFightForm();
+  renderSideQuests();
+  renderSecondPool();
 }
 
 // 渲染参与者列表。
@@ -257,123 +295,73 @@ function isFixedFieldBlocked(entryId, fieldKey) {
 function renderResults() {
   const wrap = document.querySelector("#results");
   wrap.innerHTML = state.results.map((result) => `
-    <div class="row">
-      <span><strong>${escapeHtml(result.participant_name)}</strong> 的随机组合</span>
-      <span class="muted">${escapeHtml(result.head || "-")} / ${escapeHtml(result.torso || "-")} / ${escapeHtml(result.personality || "-")}</span>
+    <div class="result-admin-card">
+      <div class="panel-head compact-head">
+        <strong>${escapeHtml(result.participant_name)}</strong>
+        ${result.pending_sacrifices?.length ? `<span class="pill">待重抽 ${result.pending_sacrifices.length} 项</span>` : ""}
+        ${result.ritual_failures?.length ? `<span class="pill danger">献祭失败 ${result.ritual_failures.length} 项</span>` : ""}
+      </div>
+      <div class="field-list">
+        ${state.fields.map((field) => `<div class="field-line"><strong>${escapeHtml(field.label)}</strong><span>${escapeHtml(result[field.key] || "无")}</span></div>`).join("")}
+      </div>
     </div>
   `).join("") || `<p class="muted">开奖后这里会显示结果。</p>`;
 }
 
-// 渲染管理员可修改的固定结果。
-function renderFixedResults() {
-  const wrap = document.querySelector("#fixedResults");
-  const fixedResults = state.results.filter((result) => result.fixed);
-  const unfixedResults = state.results.filter((result) => !result.fixed);
-  wrap.innerHTML = `
-    ${fixedResults.map(renderFixedResultCard).join("") || `<p class="muted">还没有固定结果。</p>`}
-    ${unfixedResults.length ? `
-      <div class="fixed-candidates">
-        <h3>可加入固定池</h3>
-        ${unfixedResults.map((result) => `
-          <div class="row">
-            <span>${escapeHtml(result.participant_name)} 的当前结果</span>
-            <button data-admin-fix-result="${result.participant_id}" type="button">固定</button>
-          </div>
-        `).join("")}
-      </div>
-    ` : ""}
-  `;
+function renderFightForm() {
+  document.querySelector("#participantNames").innerHTML = state.results.map((result) => `
+    <option value="${escapeHtml(result.participant_name)}"></option>
+  `).join("");
+  document.querySelector("#fightForm [name='fieldKey']").innerHTML = state.fields.map((field) => `
+    <option value="${field.key}">${escapeHtml(field.label)}</option>
+  `).join("");
+}
 
-  wrap.querySelectorAll("[data-admin-fix-result]").forEach((button) => {
+function renderSideQuests() {
+  const wrap = document.querySelector("#sideQuests");
+  wrap.innerHTML = state.participants.map((participant) => {
+    const status = participant.side_quest_used ? "已完成" : participant.side_quest_unlocked ? "已解锁" : "未解锁";
+    return `
+      <div class="row">
+        <span><strong>${escapeHtml(participant.name)}</strong> · ${status}</span>
+        <button data-unlock-side-quest="${participant.id}" type="button" ${participant.side_quest_used || participant.side_quest_unlocked || !state.drawLocked ? "disabled" : ""}>解锁</button>
+      </div>
+    `;
+  }).join("") || `<p class="muted">还没有参与者。</p>`;
+
+  wrap.querySelectorAll("[data-unlock-side-quest]").forEach((button) => {
     button.addEventListener("click", async () => {
-      const participantId = Number(button.dataset.adminFixResult);
-      const result = findResult(participantId);
-      if (!confirm(`确认固定 ${result.participant_name} 的此次结果？这些字段值会从之后的抽奖池移除。`)) return;
+      const participant = state.participants.find((item) => item.id === Number(button.dataset.unlockSideQuest));
+      if (!confirm(`确认为 ${participant.name} 解锁一次支线删除机会？`)) return;
       await adminAction(
-        async () => request(`/api/admin/fixed-results/${participantId}`, { method: "POST", body: "{}" }),
-        "结果已固定。"
+        async () => request(`/api/admin/side-quest/${participant.id}/unlock`, { method: "POST", body: "{}" }),
+        "支线按钮已解锁。"
       );
     });
   });
-
-  wrap.querySelectorAll("[data-unfix-result]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const participantId = Number(button.dataset.unfixResult);
-      const result = findResult(participantId);
-      if (!confirm(`确认取消固定 ${result.participant_name} 的结果？这些字段值会从固定池释放。`)) return;
-      await adminAction(
-        async () => request(`/api/admin/fixed-results/${participantId}`, { method: "DELETE" }),
-        "固定已取消。"
-      );
-    });
-  });
-
-  wrap.querySelectorAll("[data-change-fixed-field]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const [participantIdText, fieldKey] = button.dataset.changeFixedField.split(":");
-      const participantId = Number(participantIdText);
-      const select = wrap.querySelector(`[data-fixed-select="${participantId}:${fieldKey}"]`);
-      const entryId = Number(select.value);
-      const result = findResult(participantId);
-      const field = state.fields.find((item) => item.key === fieldKey);
-      const entry = findEntry(entryId);
-      const currentEntryId = result.sources?.[fieldKey];
-      const oldValue = result[fieldKey] || "-";
-      const newValue = entry?.[fieldKey] || "-";
-      if (!entryId || entryId === currentEntryId) return;
-      if (!confirm(`确认把 ${result.participant_name} 的${field.label}从「${oldValue}」改成「${newValue}」？固定池会同步更新。`)) return;
-      await adminAction(async () => request(`/api/admin/fixed-results/${participantId}`, {
-        method: "PATCH",
-        body: JSON.stringify({ fieldKey, entryId })
-      }), "固定结果已更新。");
-    });
-  });
 }
 
-// 渲染单个固定结果卡片。
-function renderFixedResultCard(result) {
-  return `
-    <div class="fixed-card">
-      <div class="panel-head compact-head">
-        <h3>${escapeHtml(result.participant_name)}</h3>
-        <button class="secondary danger" data-unfix-result="${result.participant_id}" type="button">取消固定</button>
+function renderSecondPool() {
+  const wrap = document.querySelector("#secondPool");
+  const activeItems = state.secondPool.map((item) => ({ ...item, status: "active" }));
+  const historyItems = [...state.secondPoolHistory].reverse();
+  wrap.innerHTML = [...activeItems, ...historyItems].map((item) => {
+    const field = state.fields.find((candidate) => candidate.key === item.field_key);
+    const participant = state.participants.find((candidate) => candidate.id === item.participant_id);
+    const reasonLabels = { sacrifice: "献祭", side_quest: "支线删除", fight_replaced: "打架替换" };
+    const drawnBy = state.participants.find((candidate) => candidate.id === item.drawn_by);
+    const statusText = item.status === "active"
+      ? "当前可抽"
+      : item.status === "drawn"
+        ? `第 ${item.round} 轮抽给 ${drawnBy?.name || "未知"}`
+        : `第 ${item.round} 轮仪式失败`;
+    return `
+      <div class="row">
+        <span><strong>${escapeHtml(field?.label || item.field_key)}</strong>：${escapeHtml(item.value)}</span>
+        <span class="muted">${escapeHtml(statusText)} · ${escapeHtml(reasonLabels[item.reason] || item.reason)}${participant ? ` · 来源 ${escapeHtml(participant.name)}` : ""}</span>
       </div>
-      <div class="field-list">
-        ${state.fields.map((field) => renderFixedFieldLine(result, field)).join("")}
-      </div>
-    </div>
-  `;
-}
-
-// 渲染固定结果里的单个字段编辑行。
-function renderFixedFieldLine(result, field) {
-  const currentEntryId = result.sources?.[field.key];
-  const options = state.entries
-    .filter((entry) => String(entry[field.key] || "").trim())
-    .map((entry) => `
-      <option value="${entry.id}" ${entry.id === currentEntryId ? "selected" : ""}>
-        ${escapeHtml(entry[field.key])}（${escapeHtml(entry.creator_name)}）
-      </option>
-    `).join("");
-  return `
-    <div class="fixed-field-line">
-      <span><strong>${escapeHtml(field.label)}</strong>：${escapeHtml(result[field.key] || "-")}</span>
-      <div class="fixed-field-edit">
-        <select data-fixed-select="${result.participant_id}:${field.key}">${options}</select>
-        <button data-change-fixed-field="${result.participant_id}:${field.key}" type="button">更换</button>
-      </div>
-    </div>
-  `;
-}
-
-// 根据参与者 id 找到开奖结果。
-function findResult(participantId) {
-  return state.results.find((result) => result.participant_id === participantId);
-}
-
-// 根据词条 id 找到提交词条。
-function findEntry(entryId) {
-  return state.entries.find((entry) => entry.id === entryId);
+    `;
+  }).join("") || `<p class="muted">第二轮池和历史记录目前都为空。</p>`;
 }
 
 // 转义用户提交内容，避免 HTML 注入。

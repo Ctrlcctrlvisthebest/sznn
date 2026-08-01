@@ -18,12 +18,19 @@ SESSION_MAX_AGE = 60 * 60 * 24 * 30
 
 INITIAL_DATA = {
     "nextIds": {"participant": 1, "entry": 1},
-    "settings": {"draw_locked": "0"},
+    "settings": {
+        "draw_locked": "0",
+        "phase": "submission",
+        "second_round": 0,
+        "sacrifice_open": False,
+    },
     "participants": [],
     "entries": [],
     "fieldBlocks": [],
     "restrictions": [],
     "results": [],
+    "secondPool": [],
+    "secondPoolHistory": [],
 }
 
 DRAW_FIELDS = [
@@ -50,6 +57,16 @@ def load_store():
         {**restriction, "field_key": restriction.get("field_key") or "all"}
         for restriction in store["restrictions"]
     ]
+    store["settings"] = {**deepcopy(INITIAL_DATA["settings"]), **store.get("settings", {})}
+    if store["settings"].get("draw_locked") == "1" and store["settings"].get("phase") == "submission":
+        store["settings"]["phase"] = "first_drawn"
+    store.setdefault("secondPool", [])
+    store.setdefault("secondPoolHistory", [])
+    for participant in store["participants"]:
+        participant.setdefault("side_quest_unlocked", False)
+        participant.setdefault("side_quest_used", False)
+    for result in store["results"]:
+        result.setdefault("pending_sacrifices", [])
     return store
 
 
@@ -191,7 +208,7 @@ def set_field_blocked(store, entry_id, field_key, blocked):
         })
 
 
-def add_restriction(store, participant_id, entry_id, field_key):
+def add_restriction(store, participant_id, entry_id, field_key, reason="manual"):
     exists = any(
         restriction["participant_id"] == participant_id
         and restriction["entry_id"] == entry_id
@@ -204,6 +221,7 @@ def add_restriction(store, participant_id, entry_id, field_key):
             "entry_id": entry_id,
             "field_key": field_key,
             "created_at": now(),
+            "reason": reason,
         })
 
 
@@ -213,6 +231,16 @@ def remove_restriction(store, participant_id, entry_id, field_key):
         if restriction["participant_id"] != participant_id
         or restriction["entry_id"] != entry_id
         or restriction["field_key"] != field_key
+    ]
+
+
+def remove_sacrifice_restriction(store, participant_id, entry_id, field_key):
+    store["restrictions"] = [
+        restriction for restriction in store["restrictions"]
+        if restriction["participant_id"] != participant_id
+        or restriction["entry_id"] != entry_id
+        or restriction["field_key"] != field_key
+        or restriction.get("reason") != "sacrifice"
     ]
 
 
@@ -253,6 +281,51 @@ def assign_field(store, participants, entries, field):
     }
 
 
+def assign_unique_field(store, participants, entries, field, preassigned=None):
+    """Assign one distinct entry token per participant for a single field."""
+    preassigned = preassigned or {}
+    assignments = dict(preassigned)
+    used_entry_ids = {entry["id"] for entry in assignments.values()}
+    remaining = [participant for participant in participants if participant["id"] not in assignments]
+    candidates = build_candidates(store, remaining, entries, field["key"])
+    for participant in remaining:
+        candidates[participant["id"]] = [
+            entry for entry in candidates[participant["id"]]
+            if entry["id"] not in used_entry_ids
+        ]
+
+    def match(unassigned, used):
+        if not unassigned:
+            return True
+        participant = min(
+            unassigned,
+            key=lambda item: len([
+                entry for entry in candidates[item["id"]]
+                if entry["id"] not in used
+            ]),
+        )
+        available = [
+            entry for entry in candidates[participant["id"]]
+            if entry["id"] not in used
+        ]
+        random.shuffle(available)
+        for entry in available:
+            assignments[participant["id"]] = entry
+            if match(
+                [item for item in unassigned if item["id"] != participant["id"]],
+                used | {entry["id"]},
+            ):
+                return True
+            assignments.pop(participant["id"], None)
+        return False
+
+    if not match(remaining, used_entry_ids):
+        raise ValueError(
+            f"{field['label']}没有足够的互不重复可抽词条，请补充词条或调整禁抽限制。"
+        )
+    return assignments
+
+
 def get_participant_entries(participant, entries):
     return [
         entry for entry in entries
@@ -274,6 +347,28 @@ def choose_self_match_slots(participants, entries):
             continue
 
         self_matches[participant["id"]] = random.choice(possible_matches)
+    return self_matches
+
+
+def choose_unique_self_match_slots(store, participants, entries):
+    self_matches = {}
+    for participant in participants:
+        allowed_by_field = {
+            field["key"]: {
+                entry["id"] for entry in build_candidates(
+                    store, [participant], entries, field["key"]
+                )[participant["id"]]
+            }
+            for field in DRAW_FIELDS
+        }
+        possible_matches = [
+            {"field": field, "entry": entry}
+            for field in DRAW_FIELDS
+            for entry in get_participant_entries(participant, entries)
+            if entry["id"] in allowed_by_field[field["key"]]
+        ]
+        if possible_matches:
+            self_matches[participant["id"]] = random.choice(possible_matches)
     return self_matches
 
 
@@ -313,29 +408,21 @@ def run_draw(store):
     if not entries:
         raise ValueError("还没有可抽提交。")
 
-    fixed_results = get_fixed_results(store)
-    fixed_participant_ids = {result["participant_id"] for result in fixed_results}
-    participants_to_draw = [
-        participant for participant in participants
-        if participant["id"] not in fixed_participant_ids
-    ]
-    self_matches = choose_self_match_slots(participants_to_draw, entries)
+    participants_to_draw = participants
+    self_matches = choose_unique_self_match_slots(store, participants_to_draw, entries)
 
     field_assignments = {}
     for field in DRAW_FIELDS:
-        participants_needing_random = [
-            participant for participant in participants_to_draw
-            if self_matches.get(participant["id"], {}).get("field", {}).get("key") != field["key"]
-        ]
-        if participants_needing_random:
-            field_assignments[field["key"]] = assign_field(
-                store,
-                participants_needing_random,
-                entries,
-                field,
-            )
+        preassigned = {
+            participant["id"]: self_matches[participant["id"]]["entry"]
+            for participant in participants_to_draw
+            if self_matches.get(participant["id"], {}).get("field", {}).get("key") == field["key"]
+        }
+        field_assignments[field["key"]] = assign_unique_field(
+            store, participants_to_draw, entries, field, preassigned
+        )
 
-    results = list(fixed_results)
+    results = []
     for participant in participants_to_draw:
         result = {
             "participant_id": participant["id"],
@@ -343,17 +430,17 @@ def run_draw(store):
             "sources": {},
         }
         for field in DRAW_FIELDS:
-            self_match = self_matches.get(participant["id"])
-            if self_match and self_match["field"]["key"] == field["key"]:
-                source_entry = self_match["entry"]
-            else:
-                source_entry = field_assignments[field["key"]][participant["id"]]
+            source_entry = field_assignments[field["key"]][participant["id"]]
             result[field["key"]] = source_entry[field["key"]]
             result["sources"][field["key"]] = source_entry["id"]
         results.append(result)
 
     store["results"] = results
     store["settings"]["draw_locked"] = "1"
+    store["settings"]["phase"] = "first_drawn"
+    store["settings"]["sacrifice_open"] = False
+    store["settings"]["second_round"] = 0
+    store["secondPool"] = []
     return len(results)
 
 
@@ -446,24 +533,302 @@ def unfix_result(store, participant, result):
     return result
 
 
-def sacrifice_and_redraw(store, participant, result, field_key):
+def add_to_second_pool(store, entry_id, field_key, value, reason, participant_id=None):
+    if not entry_id or not is_valid_field(field_key):
+        return
+    exists = any(
+        item["entry_id"] == entry_id and item["field_key"] == field_key
+        for item in store["secondPool"]
+    )
+    if exists:
+        return
+    store["secondPool"].append({
+        "entry_id": entry_id,
+        "field_key": field_key,
+        "value": value,
+        "reason": reason,
+        "participant_id": participant_id,
+        "created_at": now(),
+    })
+
+
+def open_sacrifice_round(store):
+    if store["settings"].get("draw_locked") != "1":
+        raise ValueError("请先完成第一次抽取。")
+    if store["settings"].get("sacrifice_open"):
+        raise ValueError("当前已经处于献祭阶段。")
+    if any(result.get("pending_sacrifices") for result in store["results"]):
+        raise ValueError("还有上一轮待抽取的献祭词条。")
+    store["settings"]["second_round"] = int(store["settings"].get("second_round") or 0) + 1
+    store["settings"]["sacrifice_open"] = True
+    store["settings"]["phase"] = "sacrifice_open"
+
+
+def submit_sacrifices(store, participant, result, field_keys):
     if result.get("fixed"):
-        raise ValueError("这个结果已经固定，不能再献祭重抽。")
-    if not is_valid_field(field_key):
-        raise ValueError("请选择要献祭的字段。")
+        raise ValueError("这支签已经供奉，不能再献祭。")
+    if not store["settings"].get("sacrifice_open"):
+        raise ValueError("管理员尚未开启第二次抽取的献祭阶段。")
+    if result.get("pending_sacrifices"):
+        raise ValueError("你本轮已经提交过献祭。")
+    field_keys = list(dict.fromkeys(field_keys))
+    if not field_keys:
+        raise ValueError("至少献祭一个部位词条。")
+    if any(not is_valid_field(field_key) for field_key in field_keys):
+        raise ValueError("献祭字段不正确。")
 
-    source_entry_id = (result.get("sources") or {}).get(field_key)
-    if not source_entry_id:
-        raise ValueError("没有找到这个字段的来源词条。")
+    sources = result.setdefault("sources", {})
+    previous_slip = {
+        field["key"]: result.get(field["key"], "")
+        for field in DRAW_FIELDS
+    }
+    previous_slip["sources"] = dict(sources)
+    for field_key in field_keys:
+        previous_slip[field_key] = "无"
+        previous_slip["sources"][field_key] = None
 
-    add_restriction(store, participant["id"], source_entry_id, field_key)
-    new_result = draw_result_for_participant(store, participant)
-    store["results"] = [
-        existing for existing in store["results"]
-        if existing["participant_id"] != participant["id"]
+    for field_key in field_keys:
+        source_entry_id = sources.get(field_key)
+        if not source_entry_id or result.get(field_key) in ("无", "普通人类", "待重抽"):
+            raise ValueError(f"{get_field_label(field_key)}当前不能献祭。")
+
+    for field_key in field_keys:
+        source_entry_id = sources[field_key]
+        add_restriction(store, participant["id"], source_entry_id, field_key, "sacrifice")
+        add_to_second_pool(
+            store,
+            source_entry_id,
+            field_key,
+            result[field_key],
+            "sacrifice",
+            participant["id"],
+        )
+        result[field_key] = "待重抽"
+        sources[field_key] = None
+
+    result["pending_sacrifices"] = field_keys
+    result["pending_previous_slip"] = previous_slip
+    result.pop("ritual_failures", None)
+    result.pop("ritual_failure_round", None)
+    result["sacrifice_round"] = store["settings"]["second_round"]
+    result["updated_at"] = now()
+    return result
+
+
+def assign_pool_items(store, participants, pool_items, field_key):
+    restrictions = {
+        (item["participant_id"], item["entry_id"])
+        for item in store["restrictions"]
+        if item["field_key"] in (field_key, "all")
+    }
+    assignments = {}
+    for participant in participants:
+        available = [
+            item for item in pool_items
+            if (participant["id"], item["entry_id"]) not in restrictions
+        ]
+        if not available:
+            raise ValueError(
+                f"{participant['name']} 在第二轮池中没有可抽的{get_field_label(field_key)}。"
+            )
+        assignments[participant["id"]] = random.choice(available)
+    return assignments
+
+
+def run_second_draw(store):
+    if not store["settings"].get("sacrifice_open"):
+        raise ValueError("当前没有开启献祭阶段。")
+    pending_results = [result for result in store["results"] if result.get("pending_sacrifices")]
+    if not pending_results:
+        raise ValueError("还没有参与者提交献祭。")
+
+    sacrifice_counts = {
+        field["key"]: sum(
+            field["key"] in result.get("pending_sacrifices", [])
+            for result in pending_results
+        )
+        for field in DRAW_FIELDS
+    }
+    failed_fields = set()
+    for field_key, count in sacrifice_counts.items():
+        if count == 1:
+            failed_fields.add(field_key)
+
+    eligible_results = [
+        result for result in pending_results
+        if any(
+            field_key not in failed_fields
+            for field_key in result.get("pending_sacrifices", [])
+        )
     ]
-    store["results"].append(new_result)
-    return new_result
+    eligible_participants = [
+        find_by_id(store["participants"], result["participant_id"])
+        for result in eligible_results
+    ]
+
+    all_assignments = {}
+    for field in DRAW_FIELDS:
+        pool_items = [
+            item for item in store["secondPool"]
+            if item["field_key"] == field["key"]
+            and not (
+                item.get("reason") == "sacrifice"
+                and item["field_key"] in failed_fields
+            )
+        ]
+        if eligible_participants:
+            all_assignments[field["key"]] = assign_pool_items(
+                store, eligible_participants, pool_items, field["key"]
+            )
+
+    used_tokens = set()
+    pool_history = []
+    for result in pending_results:
+        participant_failures = []
+        second_slip = {
+            field["key"]: "无"
+            for field in DRAW_FIELDS
+        }
+        second_slip["sources"] = {
+            field["key"]: None
+            for field in DRAW_FIELDS
+        }
+        pending_field_keys = list(result.get("pending_sacrifices", []))
+        for field_key in pending_field_keys:
+            if field_key in failed_fields:
+                original_item = next(
+                    (
+                        item for item in store["secondPool"]
+                        if item["field_key"] == field_key
+                        and item.get("participant_id") == result["participant_id"]
+                        and item.get("reason") == "sacrifice"
+                    ),
+                    None,
+                )
+                if original_item:
+                    used_tokens.add((original_item["entry_id"], field_key))
+                    pool_history.append({
+                        **original_item,
+                        "status": "ritual_failed",
+                        "round": store["settings"]["second_round"],
+                        "resolved_at": now(),
+                    })
+                    remove_sacrifice_restriction(
+                        store,
+                        result["participant_id"],
+                        original_item["entry_id"],
+                        field_key,
+                    )
+                result[field_key] = "无"
+                result.setdefault("sources", {})[field_key] = None
+                participant_failures.append(field_key)
+
+        is_eligible = result in eligible_results
+        if is_eligible:
+            for field in DRAW_FIELDS:
+                field_key = field["key"]
+                item = all_assignments[field_key][result["participant_id"]]
+                result[field_key] = item["value"]
+                result.setdefault("sources", {})[field_key] = item["entry_id"]
+                second_slip[field_key] = item["value"]
+                second_slip["sources"][field_key] = item["entry_id"]
+                used_tokens.add((item["entry_id"], field_key))
+                pool_history.append({
+                    **item,
+                    "status": "drawn",
+                    "round": store["settings"]["second_round"],
+                    "drawn_by": result["participant_id"],
+                    "resolved_at": now(),
+                })
+        result["pending_sacrifices"] = []
+        if is_eligible:
+            result["previous_slip"] = result.get("pending_previous_slip", {})
+            result["second_slip"] = second_slip
+            result["has_second_slip"] = True
+        else:
+            result.pop("previous_slip", None)
+            result.pop("second_slip", None)
+            result.pop("has_second_slip", None)
+        result.pop("pending_previous_slip", None)
+        if participant_failures:
+            result["ritual_failures"] = participant_failures
+            result["ritual_failure_round"] = store["settings"]["second_round"]
+        else:
+            result.pop("ritual_failures", None)
+            result.pop("ritual_failure_round", None)
+        result["last_redraw_round"] = store["settings"]["second_round"]
+        result["updated_at"] = now()
+
+    store["secondPool"] = [
+        item for item in store["secondPool"]
+        if (item["entry_id"], item["field_key"]) not in used_tokens
+    ]
+    store["secondPoolHistory"].extend(pool_history)
+    store["settings"]["sacrifice_open"] = False
+    store["settings"]["phase"] = "second_drawn"
+    return len(pending_results)
+
+
+def unlock_side_quest(store, participant):
+    if participant.get("side_quest_used"):
+        raise ValueError("该参与者已经完成过支线。")
+    participant["side_quest_unlocked"] = True
+
+
+def use_side_quest(store, participant, result, field_key):
+    if result.get("fixed"):
+        raise ValueError("这支签已经供奉，不能再删除词条。")
+    if not participant.get("side_quest_unlocked") or participant.get("side_quest_used"):
+        raise ValueError("你没有可用的支线机会。")
+    if not is_valid_field(field_key):
+        raise ValueError("请选择要删除的部位词条。")
+    source_entry_id = (result.get("sources") or {}).get(field_key)
+    if not source_entry_id or result.get(field_key) in ("无", "普通人类", "待重抽"):
+        raise ValueError("这个部位当前不能删除。")
+    add_to_second_pool(
+        store, source_entry_id, field_key, result[field_key], "side_quest", participant["id"]
+    )
+    result[field_key] = "普通人类"
+    result["sources"][field_key] = None
+    result["updated_at"] = now()
+    participant["side_quest_unlocked"] = False
+    participant["side_quest_used"] = True
+    return result
+
+
+def fight_for_field(store, winner, loser, field_key):
+    if store["settings"].get("phase") not in ("first_drawn", "second_drawn"):
+        raise ValueError("只能在抽取完成后进行打架。")
+    if winner["id"] == loser["id"]:
+        raise ValueError("胜者和败者不能是同一个人。")
+    if not is_valid_field(field_key):
+        raise ValueError("请选择争夺的部位。")
+    winner_result = find_result_for_participant(store, winner["id"])
+    loser_result = find_result_for_participant(store, loser["id"])
+    if not winner_result or not loser_result:
+        raise ValueError("没有找到双方的抽取结果。")
+    if winner_result.get("fixed") or loser_result.get("fixed"):
+        raise ValueError("已供奉的签不能参与打架。")
+    loser_source = (loser_result.get("sources") or {}).get(field_key)
+    if not loser_source or loser_result.get(field_key) in ("无", "普通人类", "待重抽"):
+        raise ValueError("败者这个部位没有可被抢走的词条。")
+
+    winner_source = (winner_result.get("sources") or {}).get(field_key)
+    if winner_source:
+        add_to_second_pool(
+            store,
+            winner_source,
+            field_key,
+            winner_result[field_key],
+            "fight_replaced",
+            winner["id"],
+        )
+    winner_result[field_key] = loser_result[field_key]
+    winner_result.setdefault("sources", {})[field_key] = loser_source
+    winner_result["updated_at"] = now()
+    loser_result[field_key] = "无"
+    loser_result.setdefault("sources", {})[field_key] = None
+    loser_result["updated_at"] = now()
 
 
 def build_overview(store):
@@ -502,6 +867,12 @@ def build_overview(store):
                 "sources": result.get("sources", {}),
                 "fixed": result.get("fixed", False),
                 "fixed_at": result.get("fixed_at", ""),
+                "pending_sacrifices": result.get("pending_sacrifices", []),
+                "last_redraw_round": result.get("last_redraw_round", 0),
+                "ritual_failures": result.get("ritual_failures", []),
+                "has_second_slip": result.get("has_second_slip", False),
+                "previous_slip": result.get("previous_slip", {}),
+                "second_slip": result.get("second_slip", {}),
             })
 
     field_blocks = []
@@ -522,6 +893,11 @@ def build_overview(store):
         "fieldBlocks": field_blocks,
         "fields": DRAW_FIELDS,
         "drawLocked": store["settings"].get("draw_locked") == "1",
+        "phase": store["settings"].get("phase", "submission"),
+        "sacrificeOpen": bool(store["settings"].get("sacrifice_open")),
+        "secondRound": int(store["settings"].get("second_round") or 0),
+        "secondPool": store.get("secondPool", []),
+        "secondPoolHistory": store.get("secondPoolHistory", []),
     }
 
 
@@ -608,6 +984,7 @@ def state():
         "ok": True,
         "drawLocked": store["settings"].get("draw_locked") == "1",
         "resultCount": len(store["results"]),
+        "phase": store["settings"].get("phase", "submission"),
     })
 
 
@@ -652,6 +1029,11 @@ def get_result(name):
         "participant_name": participant["name"],
         "title": f"{participant['name']} 的随机组合",
         "fields": DRAW_FIELDS,
+        "phase": store["settings"].get("phase", "submission"),
+        "sacrifice_open": bool(store["settings"].get("sacrifice_open")),
+        "second_round": int(store["settings"].get("second_round") or 0),
+        "side_quest_unlocked": participant.get("side_quest_unlocked", False),
+        "side_quest_used": participant.get("side_quest_used", False),
         **result,
     }})
 
@@ -662,30 +1044,26 @@ def fix_public_result(name):
     participant = next((item for item in store["participants"] if item["name"] == name.strip()), None)
     result = participant and find_result_for_participant(store, participant["id"])
     if not result:
-        return jsonify({"ok": False, "error": "没有找到可固定的结果。"}), 404
-
+        return jsonify({"ok": False, "error": "没有找到可供奉的结果。"}), 404
+    if result.get("pending_sacrifices"):
+        return jsonify({"ok": False, "error": "这支签有等待重抽的部位，暂时不能供奉。"}), 400
     fix_result(store, participant, result)
     save_store(store)
-    return jsonify({"ok": True, "result": {
-        "participant_name": participant["name"],
-        "title": f"{participant['name']} 的随机组合",
-        "fields": DRAW_FIELDS,
-        **result,
-    }})
+    return jsonify({"ok": True})
 
 
 @app.post("/api/results/<name>/sacrifice")
 def sacrifice_public_result(name):
     store = load_store()
     data = request.get_json(silent=True) or {}
-    field_key = str(data.get("fieldKey", ""))
+    field_keys = [str(item) for item in data.get("fieldKeys", [])]
     participant = next((item for item in store["participants"] if item["name"] == name.strip()), None)
     result = participant and find_result_for_participant(store, participant["id"])
     if not result:
         return jsonify({"ok": False, "error": "没有找到可献祭的结果。"}), 404
 
     try:
-        new_result = sacrifice_and_redraw(store, participant, result, field_key)
+        new_result = submit_sacrifices(store, participant, result, field_keys)
     except ValueError as error:
         return jsonify({"ok": False, "error": str(error)}), 400
 
@@ -695,6 +1073,29 @@ def sacrifice_public_result(name):
         "title": f"{participant['name']} 的随机组合",
         "fields": DRAW_FIELDS,
         **new_result,
+    }})
+
+
+@app.post("/api/results/<name>/side-quest")
+def use_public_side_quest(name):
+    store = load_store()
+    data = request.get_json(silent=True) or {}
+    participant = next((item for item in store["participants"] if item["name"] == name.strip()), None)
+    result = participant and find_result_for_participant(store, participant["id"])
+    if not participant or not result:
+        return jsonify({"ok": False, "error": "没有找到可操作的结果。"}), 404
+    try:
+        use_side_quest(store, participant, result, str(data.get("fieldKey", "")))
+    except ValueError as error:
+        return jsonify({"ok": False, "error": str(error)}), 400
+    save_store(store)
+    return jsonify({"ok": True, "result": {
+        "participant_name": participant["name"],
+        "title": f"{participant['name']} 的随机组合",
+        "fields": DRAW_FIELDS,
+        "side_quest_unlocked": participant.get("side_quest_unlocked", False),
+        "side_quest_used": participant.get("side_quest_used", False),
+        **result,
     }})
 
 
@@ -886,6 +1287,72 @@ def draw():
     return jsonify({"ok": True, "count": count})
 
 
+@app.post("/api/admin/sacrifice-round/open")
+def open_admin_sacrifice_round():
+    auth_error = require_admin()
+    if auth_error:
+        return auth_error
+    store = load_store()
+    try:
+        open_sacrifice_round(store)
+    except ValueError as error:
+        return jsonify({"ok": False, "error": str(error)}), 400
+    save_store(store)
+    return jsonify({"ok": True})
+
+
+@app.post("/api/admin/second-draw")
+def admin_second_draw():
+    auth_error = require_admin()
+    if auth_error:
+        return auth_error
+    store = load_store()
+    try:
+        count = run_second_draw(store)
+    except ValueError as error:
+        return jsonify({"ok": False, "error": str(error)}), 400
+    save_store(store)
+    return jsonify({"ok": True, "count": count})
+
+
+@app.post("/api/admin/side-quest/<int:participant_id>/unlock")
+def admin_unlock_side_quest(participant_id):
+    auth_error = require_admin()
+    if auth_error:
+        return auth_error
+    store = load_store()
+    participant = find_by_id(store["participants"], participant_id)
+    if not participant:
+        return jsonify({"ok": False, "error": "没有找到参与者。"}), 404
+    try:
+        unlock_side_quest(store, participant)
+    except ValueError as error:
+        return jsonify({"ok": False, "error": str(error)}), 400
+    save_store(store)
+    return jsonify({"ok": True})
+
+
+@app.post("/api/admin/fight")
+def admin_fight():
+    auth_error = require_admin()
+    if auth_error:
+        return auth_error
+    store = load_store()
+    data = request.get_json(silent=True) or {}
+    winner_name = str(data.get("winnerName", "")).strip()
+    loser_name = str(data.get("loserName", "")).strip()
+    winner = next((item for item in store["participants"] if item["name"] == winner_name), None)
+    loser = next((item for item in store["participants"] if item["name"] == loser_name), None)
+    if not winner or not loser:
+        return jsonify({"ok": False, "error": "请选择胜者和败者。"}), 400
+    try:
+        fight_for_field(store, winner, loser, str(data.get("fieldKey", "")))
+    except ValueError as error:
+        return jsonify({"ok": False, "error": str(error)}), 400
+    save_store(store)
+    return jsonify({"ok": True})
+
+
 @app.post("/api/admin/reset-draw")
 def reset_draw():
     auth_error = require_admin()
@@ -893,8 +1360,24 @@ def reset_draw():
         return auth_error
 
     store = load_store()
-    store["results"] = get_fixed_results(store)
+    store["results"] = []
+    store["secondPool"] = []
+    store["secondPoolHistory"] = []
+    store["restrictions"] = [
+        item for item in store["restrictions"]
+        if item.get("reason", "manual") != "sacrifice"
+    ]
+    store["fieldBlocks"] = [
+        item for item in store["fieldBlocks"]
+        if item.get("reason") != "fixed_result"
+    ]
+    for participant in store["participants"]:
+        participant["side_quest_unlocked"] = False
+        participant["side_quest_used"] = False
     store["settings"]["draw_locked"] = "0"
+    store["settings"]["phase"] = "submission"
+    store["settings"]["second_round"] = 0
+    store["settings"]["sacrifice_open"] = False
     save_store(store)
     return jsonify({"ok": True})
 

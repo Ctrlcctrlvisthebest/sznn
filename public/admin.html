@@ -62,7 +62,9 @@
             <span id="drawStatus" class="pill">未开奖</span>
           </div>
           <div class="actions">
-            <button id="drawButton" type="button">一键开奖</button>
+            <button id="drawButton" type="button">第一次统一抽取</button>
+            <button id="openSacrificeButton" class="secondary" type="button">开启献祭阶段</button>
+            <button id="secondDrawButton" type="button">第二次统一抽取</button>
             <button id="resetButton" class="secondary danger" type="button">重置结果</button>
             <a class="button-link secondary" href="/api/admin/export.csv">导出 CSV</a>
           </div>
@@ -72,10 +74,33 @@
 
         <div class="panel">
           <div class="panel-head">
-            <h2>固定结果</h2>
-            <span class="pill">需确认</span>
+            <h2>打架抢词条</h2>
+            <span class="pill">管理员操作</span>
           </div>
-          <div class="list dense fixed-results" id="fixedResults"></div>
+          <form id="fightForm" class="stack">
+            <datalist id="participantNames"></datalist>
+            <label>胜者 <input name="winnerName" list="participantNames" required autocomplete="off" placeholder="输入参与者名字" /></label>
+            <label>败者 <input name="loserName" list="participantNames" required autocomplete="off" placeholder="输入参与者名字" /></label>
+            <label>抢夺部位 <select name="fieldKey"></select></label>
+            <button type="submit">确认抢夺</button>
+          </form>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>支线解锁</h2>
+            <span class="pill">每人一次</span>
+          </div>
+          <p class="muted">解锁后，参与者可在结果页删除一个自己的部位词条并变成“普通人类”。</p>
+          <div class="list dense" id="sideQuests"></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>第二轮抽取池</h2>
+            <span id="poolCount" class="pill">0 条</span>
+          </div>
+          <div class="list dense" id="secondPool"></div>
         </div>
       </section>
     </main>

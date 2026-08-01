@@ -447,6 +447,44 @@ button.danger,
   overflow-wrap: anywhere;
 }
 
+.ritual-failure {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 4px;
+  border: 1px solid rgba(127, 36, 56, 0.35);
+  border-radius: 8px;
+  background: rgba(127, 36, 56, 0.08);
+  color: var(--danger);
+  padding: 12px;
+}
+
+.ritual-failure small {
+  font-size: 0.85rem;
+}
+
+.slip-versions {
+  display: grid;
+  gap: 16px;
+}
+
+.slip-versions.has-two-slips {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.slip-version {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.55);
+  padding: 14px;
+}
+
+.slip-version h4 {
+  margin: 0 0 14px;
+  color: var(--accent-dark);
+  font-size: 1.05rem;
+}
+
 .result-actions {
   display: grid;
   gap: 12px;
@@ -463,6 +501,59 @@ button.danger,
 
 .sacrifice-box label {
   margin-bottom: 0;
+}
+
+.multi-sacrifice,
+.side-quest-box {
+  display: grid;
+  gap: 12px;
+}
+
+.multi-sacrifice fieldset {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.multi-sacrifice legend {
+  color: var(--muted);
+  font-size: 0.92rem;
+  font-weight: 800;
+  padding: 0 6px;
+}
+
+.check-field {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin: 0;
+  border-radius: 6px;
+  background: #fff;
+  padding: 9px;
+}
+
+.check-field input {
+  width: 18px;
+  height: 18px;
+  margin: 2px 0 0;
+  flex: 0 0 auto;
+}
+
+.result-admin-card {
+  border-bottom: 1px solid var(--line);
+  padding: 14px 0;
+}
+
+.result-admin-card:first-child {
+  padding-top: 0;
+}
+
+.result-admin-card:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
 }
 
 .status-pill {
@@ -547,7 +638,8 @@ button.danger,
   .admin-grid,
   .split,
   .sacrifice-box,
-  .fixed-field-edit {
+  .fixed-field-edit,
+  .slip-versions.has-two-slips {
     grid-template-columns: 1fr;
   }
 
