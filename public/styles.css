@@ -110,65 +110,12 @@ h2 {
   outline-offset: 6px;
 }
 
-.tube {
-  position: relative;
-  width: 118px;
-  height: 142px;
-  border: 3px solid var(--accent-dark);
-  border-radius: 18px 18px 28px 28px;
-  background:
-    linear-gradient(90deg, rgba(255, 255, 255, 0.28), transparent 38%),
-    linear-gradient(180deg, #c83c31, #8f261f);
-  box-shadow: inset 0 -12px 0 rgba(0, 0, 0, 0.12), 0 16px 26px rgba(116, 32, 24, 0.18);
-}
-
-.tube::before {
-  content: "";
-  position: absolute;
-  left: 16px;
-  right: 16px;
-  top: 18px;
-  height: 18px;
-  border-radius: 999px;
-  background: var(--gold);
-}
-
-.tube::after {
-  content: "签";
-  position: absolute;
-  inset: 48px 30px auto;
-  display: grid;
-  place-items: center;
-  height: 46px;
-  border: 2px solid rgba(255, 250, 240, 0.82);
-  border-radius: 999px;
-  color: #fffaf0;
-  font-size: 1.5rem;
-  font-weight: 900;
-}
-
-.tube span {
-  position: absolute;
-  top: -38px;
-  width: 15px;
-  height: 78px;
-  border: 2px solid var(--gold);
-  border-radius: 999px;
-  background: #fff8df;
-}
-
-.tube span:nth-child(1) {
-  left: 24px;
-  transform: rotate(-10deg);
-}
-
-.tube span:nth-child(2) {
-  left: 50px;
-}
-
-.tube span:nth-child(3) {
-  right: 24px;
-  transform: rotate(10deg);
+.tube-image {
+  display: block;
+  width: clamp(150px, 16vw, 190px);
+  height: auto;
+  object-fit: contain;
+  filter: drop-shadow(0 16px 18px rgba(62, 25, 24, 0.22));
 }
 
 .grid {
