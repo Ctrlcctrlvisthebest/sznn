@@ -7,3 +7,4 @@ work/
 .env
 .dev.vars
 .DS_Store
+.vscode/
