@@ -342,6 +342,61 @@ button.danger,
   display: none !important;
 }
 
+.login-jumpscare {
+  position: fixed;
+  z-index: 9999;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  cursor: pointer;
+  background: #050000;
+  animation: jumpscare-background 1.1s steps(2, end) both;
+}
+
+.login-jumpscare-face {
+  display: block;
+  width: auto;
+  height: min(100vh, 1257px);
+  max-width: 100vw;
+  object-fit: contain;
+  filter: drop-shadow(0 0 45px rgba(208, 0, 0, 0.72));
+  animation: jumpscare-face 1.1s cubic-bezier(0.1, 0.9, 0.2, 1) both;
+}
+
+@keyframes jumpscare-face {
+  0% {
+    opacity: 0;
+    transform: scale(0.08) rotate(-9deg);
+  }
+  12% {
+    opacity: 1;
+  }
+  58% {
+    transform: scale(1.28) rotate(3deg);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.8) rotate(-2deg);
+  }
+}
+
+@keyframes jumpscare-background {
+  0%, 100% {
+    background: #050000;
+  }
+  35%, 70% {
+    background: #5c0000;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .login-jumpscare,
+  .login-jumpscare-face {
+    animation: none;
+  }
+}
+
 .result-card {
   margin-top: 16px;
   border: 2px solid var(--gold);

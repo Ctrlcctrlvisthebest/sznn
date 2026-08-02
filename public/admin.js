@@ -10,7 +10,11 @@ async function request(url, options = {}) {
     ? await res.json()
     : { error: (await res.text()).trim() || "服务器返回了无法识别的响应" };
   // 非 2xx 时抛出错误，方便统一显示。
-  if (!res.ok) throw new Error(data.error || "请求失败");
+  if (!res.ok) {
+    const error = new Error(data.error || "请求失败");
+    error.status = res.status;
+    throw error;
+  }
   // 返回响应数据。
   return data;
 }
@@ -21,10 +25,29 @@ const loginForm = document.querySelector("#loginForm");
 const adminApp = document.querySelector("#adminApp");
 // 登录提示。
 const loginMessage = document.querySelector("#loginMessage");
+// 密码错误时显示的全屏笑脸。
+const loginJumpscare = document.querySelector("#loginJumpscare");
 // 后台操作提示。
 const adminMessage = document.querySelector("#adminMessage");
 // 后台当前状态缓存，loadAdmin 会刷新它。
 let state = null;
+let jumpscareTimer = null;
+
+function showLoginJumpscare() {
+  window.clearTimeout(jumpscareTimer);
+  loginJumpscare.classList.add("hidden");
+  // 强制浏览器重新开始动画，连续输错时也能再次播放。
+  void loginJumpscare.offsetWidth;
+  loginJumpscare.classList.remove("hidden");
+  jumpscareTimer = window.setTimeout(() => {
+    loginJumpscare.classList.add("hidden");
+  }, 1100);
+}
+
+loginJumpscare.addEventListener("click", () => {
+  window.clearTimeout(jumpscareTimer);
+  loginJumpscare.classList.add("hidden");
+});
 
 // 管理员登录。
 loginForm.addEventListener("submit", async (event) => {
@@ -44,6 +67,7 @@ loginForm.addEventListener("submit", async (event) => {
   // 登录失败时显示错误。
   } catch (error) {
     loginMessage.textContent = error.message;
+    if (error.status === 401) showLoginJumpscare();
   }
 });
 
