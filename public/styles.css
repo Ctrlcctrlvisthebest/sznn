@@ -29,6 +29,17 @@ body {
   line-height: 1.5;
 }
 
+.oracle-theme {
+  min-height: 100vh;
+  background-color: var(--bg);
+  background-image:
+    linear-gradient(rgba(247, 241, 230, 0.2), rgba(247, 241, 230, 0.2)),
+    url("/images/page-background-desktop.png");
+  background-position: center top;
+  background-repeat: no-repeat;
+  background-size: cover;
+}
+
 .shell {
   width: min(1120px, calc(100% - 32px));
   margin: 0 auto;
@@ -83,6 +94,10 @@ h2 {
   max-width: 650px;
   color: var(--muted);
   font-size: 1.08rem;
+}
+
+.sign-hero .lead {
+  color: #59c48b;
 }
 
 .oracle-visual {
@@ -626,6 +641,12 @@ button.danger,
 }
 
 @media (max-width: 800px) {
+  .oracle-theme {
+    background-image:
+      linear-gradient(rgba(247, 241, 230, 0.2), rgba(247, 241, 230, 0.2)),
+      url("/images/page-background-mobile.png");
+  }
+
   .hero,
   .panel-head,
   .slip-head,
