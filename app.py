@@ -21,6 +21,7 @@ STORE_PATH = Path("data/store.json")
 STORE_LOCK_PATH = Path("data/store.lock")
 ADMIN_COOKIE = "admin_session"
 SESSION_MAX_AGE = 60 * 60 * 24 * 30
+RESULT_COUNTDOWN_SECONDS = 2 * 60 * 60
 
 INITIAL_DATA = {
     "nextIds": {"participant": 1, "entry": 1},
@@ -115,6 +116,7 @@ def load_store():
         participant.setdefault("side_quest_used", False)
     for result in store["results"]:
         result.setdefault("pending_sacrifices", [])
+        result.setdefault("reveal_version", 1)
     return store
 
 
@@ -582,6 +584,7 @@ def run_draw(store):
             "participant_id": participant["id"],
             "created_at": now(),
             "sources": {},
+            "reveal_version": 1,
         }
         for field in DRAW_FIELDS:
             source_entry = field_assignments[field["key"]][participant["id"]]
@@ -896,6 +899,7 @@ def run_second_draw(store):
             result["previous_slip"] = result.get("pending_previous_slip", {})
             result["second_slip"] = second_slip
             result["has_second_slip"] = True
+            result["reveal_version"] = int(result.get("reveal_version") or 0) + 1
         else:
             result.pop("previous_slip", None)
             result.pop("second_slip", None)
@@ -1179,6 +1183,45 @@ def get_result(name):
     if not result:
         return jsonify({"ok": False, "error": "没有找到结果。请确认名字完全一致，或等待管理员开奖。"}), 404
     return jsonify({"ok": True, "result": {
+        "participant_name": participant["name"],
+        "title": f"{participant['name']} 的随机组合",
+        "fields": DRAW_FIELDS,
+        "phase": store["settings"].get("phase", "submission"),
+        "sacrifice_open": bool(store["settings"].get("sacrifice_open")),
+        "second_round": int(store["settings"].get("second_round") or 0),
+        "side_quest_unlocked": participant.get("side_quest_unlocked", False),
+        "side_quest_used": participant.get("side_quest_used", False),
+        **result,
+    }})
+
+
+@app.post("/api/results/<name>/claim")
+@store_write_locked
+def claim_result(name):
+    store = load_store()
+    participant = next((item for item in store["participants"] if item["name"] == name.strip()), None)
+    result = participant and find_result_for_participant(store, participant["id"])
+    if not result:
+        return jsonify({"ok": False, "error": "没有找到结果。请确认名字完全一致，或等待管理员开奖。"}), 404
+
+    reveal_version = int(result.get("reveal_version") or 1)
+    show_countdown = int(result.get("countdown_seen_version") or 0) != reveal_version
+    countdown = None
+    if show_countdown:
+        claimed_at = now()
+        result["countdown_seen_version"] = reveal_version
+        result["countdown_claimed_at"] = claimed_at
+        countdown = {
+            "duration_seconds": RESULT_COUNTDOWN_SECONDS,
+            "started_at": claimed_at,
+            "ends_at": time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ",
+                time.gmtime(time.time() + RESULT_COUNTDOWN_SECONDS),
+            ),
+        }
+        save_store(store)
+
+    return jsonify({"ok": True, "showCountdown": show_countdown, "countdown": countdown, "result": {
         "participant_name": participant["name"],
         "title": f"{participant['name']} 的随机组合",
         "fields": DRAW_FIELDS,

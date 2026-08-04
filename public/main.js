@@ -26,6 +26,7 @@ const resultMessage = document.querySelector("#resultMessage");
 // 展示开奖结果的卡片。
 const resultCard = document.querySelector("#resultCard");
 let currentResultName = "";
+let countdownTimer = null;
 
 async function loadPublicPhase() {
   try {
@@ -82,9 +83,12 @@ resultForm.addEventListener("submit", async (event) => {
   const name = new FormData(resultForm).get("name").trim();
   // 调用结果查询接口。
   try {
-    const { result } = await request(`/api/results/${encodeURIComponent(name)}`);
+    const { result, showCountdown, countdown } = await request(`/api/results/${encodeURIComponent(name)}/claim`, {
+      method: "POST",
+      body: "{}"
+    });
     currentResultName = name;
-    renderResult(result);
+    renderResult(result, showCountdown ? countdown : null);
     // 显示结果卡片。
     resultCard.classList.remove("hidden");
     // 清空提示。
@@ -96,7 +100,11 @@ resultForm.addEventListener("submit", async (event) => {
   }
 });
 
-function renderResult(result) {
+function renderResult(result, countdown = null) {
+  if (countdownTimer) {
+    clearInterval(countdownTimer);
+    countdownTimer = null;
+  }
   const fields = result.fields || [
     { key: "head", label: "头" },
     { key: "torso", label: "躯干" },
@@ -155,6 +163,12 @@ function renderResult(result) {
       <h3>${escapeHtml(result.participant_name)} 的灵签</h3>
       ${result.fixed ? `<p class="status-pill seal-pill">已供奉</p>` : pending.length ? `<p class="status-pill">等待重抽</p>` : ""}
     </div>
+    ${countdown ? `
+      <div class="first-query-countdown" aria-live="polite">
+        <span>首次揭签倒计时</span>
+        <strong id="resultCountdown">02:00:00</strong>
+      </div>
+    ` : ""}
     ${ritualFailures.length ? `<div class="ritual-failure"><strong>献祭仪式人数不足，献祭失败</strong><small>以下部位的献祭词条未返还，现为“无”：${ritualFailures.map((key) => escapeHtml(fields.find((field) => field.key === key)?.label || key)).join("、")}</small></div>` : ""}
     <div class="slip-versions ${previousSlip ? "has-two-slips" : ""}">
       ${previousSlip ? `
@@ -175,9 +189,32 @@ function renderResult(result) {
     </div>
   `;
 
+  if (countdown) startResultCountdown(countdown.ends_at);
+
   document.querySelector("#sacrificeButton")?.addEventListener("click", sacrificeCurrentFields);
   document.querySelector("#sideQuestButton")?.addEventListener("click", useSideQuest);
   document.querySelector("#fixResultButton")?.addEventListener("click", fixCurrentResult);
+}
+
+function startResultCountdown(endsAt) {
+  const countdownElement = document.querySelector("#resultCountdown");
+  const endTime = Date.parse(endsAt);
+  if (!countdownElement || Number.isNaN(endTime)) return;
+
+  const updateCountdown = () => {
+    const remaining = Math.max(0, Math.ceil((endTime - Date.now()) / 1000));
+    const hours = String(Math.floor(remaining / 3600)).padStart(2, "0");
+    const minutes = String(Math.floor((remaining % 3600) / 60)).padStart(2, "0");
+    const seconds = String(remaining % 60).padStart(2, "0");
+    countdownElement.textContent = `${hours}:${minutes}:${seconds}`;
+    if (remaining === 0 && countdownTimer) {
+      clearInterval(countdownTimer);
+      countdownTimer = null;
+    }
+  };
+
+  updateCountdown();
+  countdownTimer = setInterval(updateCountdown, 1000);
 }
 
 async function refreshCurrentResult() {

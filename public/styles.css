@@ -438,6 +438,27 @@ button.danger,
   font-size: 1.35rem;
 }
 
+.first-query-countdown {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 0 0 18px;
+  border: 1px solid rgba(181, 133, 44, 0.55);
+  border-radius: 8px;
+  background: rgba(181, 133, 44, 0.1);
+  padding: 12px 14px;
+  color: var(--accent-dark);
+  font-weight: 800;
+}
+
+.first-query-countdown strong {
+  color: var(--accent);
+  font-size: clamp(1.35rem, 5vw, 2rem);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.08em;
+}
+
 .result-lines {
   display: grid;
   gap: 10px;
