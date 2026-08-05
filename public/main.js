@@ -166,7 +166,7 @@ function renderResult(result, countdown = null) {
     ${countdown ? `
       <div class="first-query-countdown" aria-live="polite">
         <span>首次揭签倒计时</span>
-        <strong id="resultCountdown">02:00:00</strong>
+        <strong id="resultCountdown">03:00:00</strong>
       </div>
     ` : ""}
     ${ritualFailures.length ? `<div class="ritual-failure"><strong>献祭仪式人数不足，献祭失败</strong><small>以下部位的献祭词条未返还，现为“无”：${ritualFailures.map((key) => escapeHtml(fields.find((field) => field.key === key)?.label || key)).join("、")}</small></div>` : ""}

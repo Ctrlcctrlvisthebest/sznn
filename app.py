@@ -21,7 +21,7 @@ STORE_PATH = Path("data/store.json")
 STORE_LOCK_PATH = Path("data/store.lock")
 ADMIN_COOKIE = "admin_session"
 SESSION_MAX_AGE = 60 * 60 * 24 * 30
-RESULT_COUNTDOWN_SECONDS = 2 * 60 * 60
+RESULT_COUNTDOWN_SECONDS = 3 * 60 * 60
 
 INITIAL_DATA = {
     "nextIds": {"participant": 1, "entry": 1},
