@@ -25,8 +25,47 @@ const resultForm = document.querySelector("#resultForm");
 const resultMessage = document.querySelector("#resultMessage");
 // 展示开奖结果的卡片。
 const resultCard = document.querySelector("#resultCard");
+const backgroundMusic = document.querySelector("#backgroundMusic");
+const musicToggle = document.querySelector("#musicToggle");
 let currentResultName = "";
 let countdownTimer = null;
+let musicWasManuallyPaused = false;
+
+backgroundMusic.volume = 0.15;
+
+function updateMusicToggle() {
+  const isPlaying = !backgroundMusic.paused;
+  musicToggle.textContent = isPlaying ? "暂停乐声" : "开启乐声";
+  musicToggle.setAttribute("aria-pressed", String(isPlaying));
+}
+
+async function playBackgroundMusic() {
+  try {
+    await backgroundMusic.play();
+  } catch (_) {
+    updateMusicToggle();
+  }
+}
+
+musicToggle.addEventListener("click", async () => {
+  if (backgroundMusic.paused) {
+    musicWasManuallyPaused = false;
+    await playBackgroundMusic();
+  } else {
+    musicWasManuallyPaused = true;
+    backgroundMusic.pause();
+  }
+});
+
+backgroundMusic.addEventListener("play", updateMusicToggle);
+backgroundMusic.addEventListener("pause", updateMusicToggle);
+
+const startMusicAfterInteraction = () => {
+  if (backgroundMusic.paused && !musicWasManuallyPaused) playBackgroundMusic();
+};
+document.addEventListener("pointerdown", startMusicAfterInteraction, { once: true });
+document.addEventListener("keydown", startMusicAfterInteraction, { once: true });
+playBackgroundMusic();
 
 async function loadPublicPhase() {
   try {
